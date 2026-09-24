@@ -1,0 +1,271 @@
+// ============================================================
+// CMOMS - Creative & Motion Operations Management System
+// Core TypeScript Type Definitions
+// ============================================================
+
+// --- ENUMS & CONSTANTS ---
+
+export type RoleName = 'ADMIN' | 'TEAM_LEAD' | 'STRATEGIC_PIC' | 'DESIGNER' | 'MOTION_PIC' | 'REQUESTER';
+
+export type ClientType = 'INTERNAL' | 'EXTERNAL';
+
+export type TaskSource = 'ORCA' | 'ECOMMERCE';
+
+export type DesignDifficulty = 'LOW' | 'MEDIUM' | 'HIGH';
+
+export type MotionDifficulty = 'LVL_1_SIMPLE' | 'LVL_2_MEDIUM' | 'LVL_3_ADVANCED' | 'LVL_4_PERIOD';
+
+export type OperationalExcellence = 'EXCELLENCE' | 'GOOD' | 'BAD';
+
+export type DesignStatus =
+  | 'DRAFT'
+  | 'STRAT_PENDING'
+  | 'DESIGN_UNASSIGNED'
+  | 'DESIGN_ASSIGNED'
+  | 'DESIGN_IN_PROGRESS'
+  | 'DESIGN_SUBMITTED'
+  | 'DESIGN_REVISION'
+  | 'DESIGN_APPROVED'
+  | 'TASK_CLOSED';
+
+export type StratStatus = 'NOT_REQUIRED' | 'PENDING' | 'IN_PROGRESS' | 'REVIEW' | 'APPROVED';
+
+export type MotionStatus = 'QUEUED' | 'IN_PROGRESS' | 'INTERNAL_QC' | 'COMPLETED' | 'DONE';
+
+export type RevisionStage = 'STRATEGIC' | 'DESIGN' | 'MOTION';
+
+export type ReasonCategory = 'CLIENT_CHANGE' | 'BRIEF_MISMATCH' | 'TYPO' | 'QUALITY_ISSUE' | 'SCOPE_CHANGE' | 'OTHER';
+
+export type AuditAction =
+  | 'CREATE'
+  | 'UPDATE'
+  | 'DELETE'
+  | 'STATUS_TRANSITION'
+  | 'ASSIGN'
+  | 'REASSIGN'
+  | 'SUBMIT'
+  | 'APPROVE'
+  | 'REVISION_REQUEST';
+
+// --- DATA MODELS ---
+
+export interface Role {
+  id: number;
+  name: RoleName;
+  label: string;
+  description: string;
+  created_at: string;
+}
+
+export interface User {
+  id: string;
+  email: string;
+  password_hash: string;
+  full_name: string;
+  avatar_initials: string;
+  role_id: number;
+  role_name: RoleName;
+  daily_capacity_points: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Client {
+  id: number;
+  name: string;
+  client_type: ClientType;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface ContentType {
+  id: number;
+  name: string;
+  default_difficulty: DesignDifficulty;
+  created_at: string;
+}
+
+export interface Holiday {
+  holiday_date: string; // YYYY-MM-DD
+  description: string;
+}
+
+export interface CreativeTask {
+  id: string;
+  task_code: string; // REQ-YYYY-XXXX
+  client_id: number;
+  campaign_name: string;
+  content_type_id: number;
+  task_source: TaskSource;
+  req_qty: number;
+  output_qty: number;
+  req_date: string; // YYYY-MM-DD
+  due_date: string;
+  submission_date: string | null;
+  sla_working_days: number | null;
+  operational_excellence: OperationalExcellence | null;
+  requires_strategic_concept: boolean;
+  strat_pic_id: string | null;
+  status_strat: StratStatus;
+  strat_revision_count: number;
+  design_pic_id: string | null;
+  design_difficulty: DesignDifficulty | null;
+  design_revision_count: number;
+  status_design: DesignStatus;
+  motion_readyness: boolean;
+  final_asset_name: string | null;
+  final_asset_link: string | null;
+  notes: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MotionTask {
+  id: string;
+  task_id: string; // FK to creative_tasks
+  motion_pic_id: string | null;
+  motion_difficulty: MotionDifficulty;
+  motion_revision_count: number;
+  status_motion: MotionStatus;
+  apply_date: string | null;
+  link_motion: string | null;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskRevision {
+  id: string;
+  task_id: string;
+  stage: RevisionStage;
+  revision_number: number;
+  reason_category: ReasonCategory;
+  notes: string;
+  requested_by: string;
+  created_at: string;
+}
+
+export interface AuditLog {
+  id: number;
+  entity_name: string;
+  entity_id: string;
+  action: AuditAction;
+  performed_by: string;
+  performer_name: string;
+  before_state: Record<string, unknown> | null;
+  after_state: Record<string, unknown> | null;
+  timestamp: string;
+}
+
+export interface Notification {
+  id: string;
+  user_id: string;
+  title: string;
+  message: string;
+  type: 'info' | 'warning' | 'success' | 'error';
+  read: boolean;
+  link?: string;
+  created_at: string;
+}
+
+// --- VIEW MODELS (for UI display) ---
+
+export interface TaskWithRelations extends CreativeTask {
+  client_name: string;
+  client_type: ClientType;
+  content_type_name: string;
+  design_pic_name: string | null;
+  strat_pic_name: string | null;
+  created_by_name: string;
+  motion_task?: MotionTask | null;
+  motion_pic_name?: string | null;
+  revisions: TaskRevision[];
+}
+
+export interface DesignerWorkload {
+  designer_id: string;
+  designer_name: string;
+  role_name: RoleName;
+  active_tasks_count: number;
+  accumulated_points: number;
+  daily_capacity: number;
+  occupancy_rate: number; // percentage
+  tasks: {
+    task_code: string;
+    campaign_name: string;
+    difficulty: DesignDifficulty | null;
+    points: number;
+    status: DesignStatus;
+    due_date: string;
+  }[];
+}
+
+export interface SLAReport {
+  total_tasks: number;
+  excellence_count: number;
+  good_count: number;
+  bad_count: number;
+  excellence_rate: number;
+  good_rate: number;
+  bad_rate: number;
+  by_brand: {
+    brand_name: string;
+    total: number;
+    excellence: number;
+    good: number;
+    bad: number;
+  }[];
+  by_month: {
+    month: string;
+    total: number;
+    excellence: number;
+    good: number;
+    bad: number;
+  }[];
+}
+
+export interface DashboardStats {
+  active_tasks: number;
+  unassigned_tasks: number;
+  in_progress_tasks: number;
+  submitted_tasks: number;
+  completed_tasks: number;
+  motion_queue: number;
+  sla_compliance_rate: number;
+  total_tasks_this_month: number;
+  approaching_deadline: TaskWithRelations[];
+  overdue_tasks: TaskWithRelations[];
+}
+
+// --- FORM TYPES ---
+
+export interface CreateTaskInput {
+  client_id: number;
+  campaign_name: string;
+  content_type_id: number;
+  task_source: TaskSource;
+  req_qty: number;
+  req_date: string;
+  due_date: string;
+  requires_strategic_concept: boolean;
+  notes: string;
+}
+
+export interface AssignTaskInput {
+  design_pic_id: string;
+  design_difficulty: DesignDifficulty;
+}
+
+export interface SubmitTaskInput {
+  output_qty: number;
+  final_asset_name: string;
+  final_asset_link: string;
+}
+
+export interface RevisionInput {
+  stage: RevisionStage;
+  reason_category: ReasonCategory;
+  notes: string;
+}
