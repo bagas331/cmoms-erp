@@ -5,11 +5,13 @@
 
 // --- ENUMS & CONSTANTS ---
 
-export type RoleName = 'ADMIN' | 'TEAM_LEAD' | 'STRATEGIC_PIC' | 'DESIGNER' | 'MOTION_PIC' | 'REQUESTER';
+export type RoleName = 'ADMIN' | 'TEAM_LEAD' | 'STRATEGIC_PIC' | 'DESIGNER' | 'MOTION_PIC' | 'REQUESTER' | 'OPERATOR';
 
 export type ClientType = 'INTERNAL' | 'EXTERNAL';
 
 export type TaskSource = 'ORCA' | 'ECOMMERCE';
+
+export type Platform = 'TIKTOK' | 'SHOPEE' | 'TOKOPEDIA' | 'LAZADA' | 'OTHER';
 
 export type DesignDifficulty = 'LOW' | 'MEDIUM' | 'HIGH';
 
@@ -30,7 +32,9 @@ export type DesignStatus =
 
 export type StratStatus = 'NOT_REQUIRED' | 'PENDING' | 'IN_PROGRESS' | 'REVIEW' | 'APPROVED';
 
-export type MotionStatus = 'QUEUED' | 'IN_PROGRESS' | 'INTERNAL_QC' | 'COMPLETED' | 'DONE';
+export type MotionReadiness = 'WAITING_ASSET_GD' | 'READY_TO_ANIMATE' | 'RENDERING';
+
+export type MotionStatus = 'QUEUED' | 'IN_PROGRESS' | 'SUBMITTED' | 'REVISION' | 'APPROVED' | 'COMPLETED';
 
 export type RevisionStage = 'STRATEGIC' | 'DESIGN' | 'MOTION';
 
@@ -67,6 +71,7 @@ export interface User {
   role_name: RoleName;
   daily_capacity_points: number;
   is_active: boolean;
+  is_registered?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -98,6 +103,7 @@ export interface CreativeTask {
   campaign_name: string;
   content_type_id: number;
   task_source: TaskSource;
+  platform: Platform;
   req_qty: number;
   output_qty: number;
   req_date: string; // YYYY-MM-DD
@@ -113,9 +119,10 @@ export interface CreativeTask {
   design_difficulty: DesignDifficulty | null;
   design_revision_count: number;
   status_design: DesignStatus;
-  motion_readyness: boolean;
+  motion_readiness: MotionReadiness;
   final_asset_name: string | null;
   final_asset_link: string | null;
+  operator_id: string | null;
   notes: string;
   created_by: string;
   created_at: string;
@@ -124,7 +131,19 @@ export interface CreativeTask {
 
 export interface MotionTask {
   id: string;
-  task_id: string; // FK to creative_tasks
+  task_id: string | null; // FK to creative_tasks, null if standalone
+  
+  // Standalone fields (when task_id is null)
+  client_id?: number;
+  platform?: 'TIKTOK' | 'SHOPEE' | 'TOKOPEDIA' | 'LAZADA' | 'OTHER';
+  motion_type?: string;
+  campaign_type?: 'BaU' | 'PayDay' | 'DD' | 'Special' | string;
+  production_date?: string;
+  period_start?: string;
+  period_end?: string;
+  studio?: 'Jakarta' | 'Bandung';
+  operator_id?: string | null;
+
   motion_pic_id: string | null;
   motion_difficulty: MotionDifficulty;
   motion_revision_count: number;
@@ -134,6 +153,17 @@ export interface MotionTask {
   notes: string;
   created_at: string;
   updated_at: string;
+}
+
+
+export interface TaskComment {
+  id: string;
+  task_id: string;
+  user_id: string;
+  user_name: string;
+  user_avatar: string;
+  content: string;
+  created_at: string;
 }
 
 export interface TaskRevision {
@@ -181,7 +211,9 @@ export interface TaskWithRelations extends CreativeTask {
   created_by_name: string;
   motion_task?: MotionTask | null;
   motion_pic_name?: string | null;
+  operator_name: string | null;
   revisions: TaskRevision[];
+  comments?: TaskComment[];
 }
 
 export interface DesignerWorkload {
@@ -246,16 +278,19 @@ export interface CreateTaskInput {
   campaign_name: string;
   content_type_id: number;
   task_source: TaskSource;
+  platform: Platform;
   req_qty: number;
   req_date: string;
   due_date: string;
   requires_strategic_concept: boolean;
+  strat_pic_id?: string;
   notes: string;
 }
 
 export interface AssignTaskInput {
-  design_pic_id: string;
-  design_difficulty: DesignDifficulty;
+  design_pic_id?: string;
+  design_difficulty?: DesignDifficulty;
+  strat_pic_id?: string;
 }
 
 export interface SubmitTaskInput {
