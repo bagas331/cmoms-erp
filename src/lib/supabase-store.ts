@@ -272,9 +272,7 @@ export async function requestRevision(taskId: string, input: RevisionInput, perf
   const { error: revErr } = await supabase.from('task_revisions').insert([{
     task_id: taskId,
     stage: input.stage,
-    revision_number: revCount,
-    reason_category: input.reason_category,
-    revision_notes: input.notes,
+    revision_notes: `[${input.reason_category}] ${input.notes}`,
     requested_by: performedBy,
     status: 'PENDING'
   }]);
@@ -515,8 +513,20 @@ export interface CreateStandaloneMotionInput {
 export async function createStandaloneMotionTask(input: CreateStandaloneMotionInput, userId: string): Promise<MotionTask> {
   if (!supabase) throw new Error('Supabase not initialized');
 
-  const { count } = await supabase.from('tasks').select('*', { count: 'exact', head: true });
-  const seq = (count || 0) + 1;
+  // Find the max existing MOT-xxxx sequence to avoid duplicates
+  const { data: existingMotTasks } = await supabase
+    .from('tasks')
+    .select('task_code')
+    .like('task_code', `MOT-${new Date().getFullYear()}-%`)
+    .order('task_code', { ascending: false })
+    .limit(1);
+
+  let seq = 1;
+  if (existingMotTasks && existingMotTasks.length > 0) {
+    const lastCode = existingMotTasks[0].task_code;
+    const lastSeq = parseInt(lastCode.split('-').pop() || '0', 10);
+    seq = lastSeq + 1;
+  }
   const taskCode = `MOT-${new Date().getFullYear()}-${String(seq).padStart(4, '0')}`;
 
   const parentTask = {
@@ -544,7 +554,7 @@ export async function createStandaloneMotionTask(input: CreateStandaloneMotionIn
   const motionRecord = {
     task_id: createdTask.id,
     motion_pic_id: input.motion_pic_id || null,
-    status_motion: input.motion_pic_id ? 'IN_PROGRESS' : 'QUEUED',
+    status_motion: 'QUEUED',
     due_date: input.period_end ? `${input.period_end}T00:00:00Z` : null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
@@ -623,7 +633,6 @@ export async function assignMotionPic(motionTaskId: string, motionPicId: string,
   if (!supabase) return;
   const updates: any = {
     motion_pic_id: motionPicId,
-    status_motion: 'IN_PROGRESS',
     updated_at: new Date().toISOString()
   };
   const diff = typeof userIdOrDiff === 'string' && userIdOrDiff.startsWith('LVL_') ? userIdOrDiff : difficulty;
@@ -644,7 +653,7 @@ export async function updateMotionStatus(motionTaskId: string, status: MotionSta
 export async function submitMotionTask(motionTaskId: string, link: string, notes?: string, userId?: string): Promise<void> {
   if (!supabase) return;
   const { error } = await supabase.from('motion_tasks').update({
-    status_motion: 'COMPLETED',
+    status_motion: 'SUBMITTED',
     final_video_link: link,
     submission_date: new Date().toISOString(),
     updated_at: new Date().toISOString()

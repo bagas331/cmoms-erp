@@ -612,18 +612,23 @@ function MotionFormModal({ onClose, userId, editTaskId, clients, motionUsers, mo
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (editTaskId) {
-      await editStandaloneMotionTask(editTaskId, {
-        ...formData,
-        motion_pic_id: formData.motion_pic_id || null,
-      }, userId);
-    } else {
-      await createStandaloneMotionTask({
-        ...formData,
-        motion_pic_id: formData.motion_pic_id || null,
-      }, userId);
+    try {
+      if (editTaskId) {
+        await editStandaloneMotionTask(editTaskId, {
+          ...formData,
+          motion_pic_id: formData.motion_pic_id || null,
+        }, userId);
+      } else {
+        await createStandaloneMotionTask({
+          ...formData,
+          motion_pic_id: formData.motion_pic_id || null,
+        }, userId);
+      }
+      onClose();
+    } catch (err: any) {
+      const msg = err?.message || err?.details || JSON.stringify(err);
+      alert(`Gagal menyimpan: ${msg}`);
     }
-    onClose();
   };
 
   return (
