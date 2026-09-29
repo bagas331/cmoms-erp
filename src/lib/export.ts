@@ -1,4 +1,4 @@
-export function downloadCSV(data: any[], filename: string) {
+export function downloadCSV(data: Record<string, unknown>[], filename: string) {
   if (data.length === 0) return;
 
   const headers = Object.keys(data[0]);
@@ -7,11 +7,18 @@ export function downloadCSV(data: any[], filename: string) {
   // Add headers
   csvRows.push(headers.join(','));
 
-  // Add rows
+  // Add rows with CSV Injection (Formula Injection) mitigation
   for (const row of data) {
     const values = headers.map(header => {
       const val = row[header];
-      const escaped = ('' + (val ?? '')).replace(/"/g, '""');
+      let strVal = '' + (val ?? '');
+      
+      // Neutralize formula injection triggers: =, +, -, @, tab, carriage return
+      if (/^[=+\-@\t\r%]/.test(strVal)) {
+        strVal = `'${strVal}`;
+      }
+      
+      const escaped = strVal.replace(/"/g, '""');
       return `"${escaped}"`;
     });
     csvRows.push(values.join(','));

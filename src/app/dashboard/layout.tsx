@@ -17,10 +17,11 @@ import { ThemeToggle } from '@/components/theme-toggle';
 const NAV_ITEMS = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'DESIGNER', 'MOTION_PIC', 'REQUESTER'] },
   { href: '/dashboard/tasks', label: 'Task Management', icon: ClipboardList, roles: ['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'DESIGNER', 'REQUESTER'] },
-  { href: '/dashboard/motion', label: 'Motion Pipeline', icon: Film, roles: ['ADMIN', 'TEAM_LEAD', 'MOTION_PIC'] },
+  { href: '/dashboard/motion', label: 'Motion Pipeline', icon: Film, roles: ['ADMIN', 'TEAM_LEAD', 'MOTION_PIC', 'REQUESTER', 'STRATEGIC_PIC'] },
   { href: '/dashboard/capacity', label: 'Workload & Capacity', icon: Users, roles: ['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'DESIGNER', 'MOTION_PIC'] },
   { href: '/dashboard/reports', label: 'Reports & Analytics', icon: BarChart3, roles: ['ADMIN', 'TEAM_LEAD'] },
 ];
+
 
 const ADMIN_ITEMS = [
   { href: '/dashboard/admin/clients', label: 'Clients / Brands', icon: Building2, roles: ['ADMIN', 'TEAM_LEAD'] },

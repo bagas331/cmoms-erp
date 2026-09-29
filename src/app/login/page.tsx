@@ -26,14 +26,10 @@ export default function LoginPage() {
   const router = useRouter();
   
   useEffect(() => {
-    const saved = localStorage.getItem('cmoms_saved_login');
-    if (saved) {
-      try {
-        const { email: sEmail, password: sPass } = JSON.parse(saved);
-        setEmail(sEmail);
-        setPassword(sPass);
-        setRememberMe(true);
-      } catch {}
+    const savedEmail = localStorage.getItem('cmoms_saved_email');
+    if (savedEmail) {
+      setEmail(savedEmail);
+      setRememberMe(true);
     }
   }, []);
 
@@ -45,9 +41,9 @@ export default function LoginPage() {
     const success = await login(email, password);
     if (success) {
       if (rememberMe) {
-        localStorage.setItem('cmoms_saved_login', JSON.stringify({ email, password }));
+        localStorage.setItem('cmoms_saved_email', email.trim());
       } else {
-        localStorage.removeItem('cmoms_saved_login');
+        localStorage.removeItem('cmoms_saved_email');
       }
       router.push('/dashboard');
     } else {
@@ -65,9 +61,9 @@ export default function LoginPage() {
     const success = await login(qEmail, qPass);
     if (success) {
       if (rememberMe) {
-        localStorage.setItem('cmoms_saved_login', JSON.stringify({ email: qEmail, password: qPass }));
+        localStorage.setItem('cmoms_saved_email', qEmail.trim());
       } else {
-        localStorage.removeItem('cmoms_saved_login');
+        localStorage.removeItem('cmoms_saved_email');
       }
       router.push('/dashboard');
     } else {

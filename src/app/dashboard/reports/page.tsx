@@ -6,7 +6,7 @@ import { EXCELLENCE_COLORS, EXCELLENCE_LABELS, SOURCE_LABELS } from '@/lib/const
 import { CreativeTask, MotionTask, OperationalExcellence, Client, User } from '@/lib/types';
 import { getMonthName } from '@/lib/utils';
 import { downloadCSV } from '@/lib/export';
-import { BarChart3, TrendingUp, Target, FileText, PieChart, Users, Calendar, Film, Download } from 'lucide-react';
+import { BarChart3, TrendingUp, Target, FileText, PieChart, Users, Calendar, Film, Download, CheckCircle2 } from 'lucide-react';
 
 export default function ReportsPage() {
   const [tasks, setTasks] = useState<CreativeTask[]>([]);
@@ -15,7 +15,7 @@ export default function ReportsPage() {
   const [users, setUsers] = useState<User[]>([]);
   
   const [filterMonth, setFilterMonth] = useState<string>('all');
-  const [filterYear, setFilterYear] = useState<string>('all');
+  const [filterYear, setFilterYear] = useState<string>(() => String(new Date().getFullYear()));
   const [activeTab, setActiveTab] = useState<'GRAPHIC' | 'MOTION'>('GRAPHIC');
 
   useEffect(() => { 
@@ -26,7 +26,36 @@ export default function ReportsPage() {
       setUsers(u);
     }).catch(console.error);
   }, []);
-  const completedTasks = tasks.filter(t => t.operational_excellence);
+
+  const availableYears = Array.from(new Set([
+    ...tasks.map(t => (t.req_date || t.created_at || '').substring(0, 4)).filter(Boolean),
+    ...motionTasks.map(m => (m.created_at || '').substring(0, 4)).filter(Boolean),
+    String(new Date().getFullYear())
+  ])).sort().reverse();
+
+  // Filter tasks based on global Month and Year filter
+  const filteredTasks = tasks.filter(t => {
+    const dStr = t.req_date || t.created_at || '';
+    if (!dStr) return true;
+    const yearStr = dStr.substring(0, 4);
+    const monthStr = dStr.substring(5, 7);
+    if (filterYear !== 'all' && yearStr !== filterYear) return false;
+    if (filterMonth !== 'all' && monthStr !== filterMonth) return false;
+    return true;
+  });
+
+  const filteredMotionTasks = motionTasks.filter(mt => {
+    const dStr = mt.created_at || '';
+    if (!dStr) return true;
+    const yearStr = dStr.substring(0, 4);
+    const monthStr = dStr.substring(5, 7);
+    if (filterYear !== 'all' && yearStr !== filterYear) return false;
+    if (filterMonth !== 'all' && monthStr !== filterMonth) return false;
+    return true;
+  });
+
+  const completedTasks = filteredTasks.filter(t => t.operational_excellence || ['DESIGN_APPROVED', 'TASK_CLOSED'].includes(t.status_design));
+  const completedMotionTasks = filteredMotionTasks.filter(m => ['APPROVED', 'COMPLETED'].includes(m.status_motion));
 
   // By Brand
   const byBrand = clients.map(c => {
@@ -43,8 +72,9 @@ export default function ReportsPage() {
   // By Month
   const byMonth: Record<string, { total: number; excellence: number; good: number; bad: number }> = {};
   completedTasks.forEach(t => {
-    const d = new Date(t.req_date);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const dStr = t.req_date || t.created_at || '';
+    if (!dStr) return;
+    const key = dStr.substring(0, 7);
     if (!byMonth[key]) byMonth[key] = { total: 0, excellence: 0, good: 0, bad: 0 };
     byMonth[key].total++;
     if (t.operational_excellence === 'EXCELLENCE') byMonth[key].excellence++;
@@ -70,7 +100,6 @@ export default function ReportsPage() {
 
   // By Motion Designer
   const motionDesigners = users.filter(u => ['MOTION_PIC', 'TEAM_LEAD'].includes(u.role_name));
-  const completedMotionTasks = motionTasks.filter(m => ['APPROVED', 'COMPLETED'].includes(m.status_motion));
   const byMotionDesigner = motionDesigners.map(d => {
     const dTasks = completedMotionTasks.filter(t => t.motion_pic_id === d.id);
     return {
@@ -81,31 +110,20 @@ export default function ReportsPage() {
   }).filter(d => d.total > 0).sort((a, b) => b.total - a.total);
 
   // By Source
-  const bySource = { ORCA: completedTasks.filter(t => t.task_source === 'ORCA').length, ECOMMERCE: completedTasks.filter(t => t.task_source === 'ECOMMERCE').length };
+  const bySource = { 
+    ORCA: completedTasks.filter(t => t.task_source === 'ORCA').length, 
+    ECOMMERCE: completedTasks.filter(t => t.task_source === 'ECOMMERCE').length 
+  };
 
   const totalExcellence = completedTasks.filter(t => t.operational_excellence === 'EXCELLENCE').length;
   const totalGood = completedTasks.filter(t => t.operational_excellence === 'GOOD').length;
   const totalBad = completedTasks.filter(t => t.operational_excellence === 'BAD').length;
 
   // Workload Tracking by PIC
-  const workloadFilteredTasks = tasks.filter(t => {
-    const d = new Date(t.req_date);
-    if (filterYear !== 'all' && d.getFullYear().toString() !== filterYear) return false;
-    if (filterMonth !== 'all' && (d.getMonth() + 1).toString() !== filterMonth) return false;
-    return true;
-  });
-
-  const workloadFilteredMotion = motionTasks.filter(m => {
-    const d = new Date(m.created_at);
-    if (filterYear !== 'all' && d.getFullYear().toString() !== filterYear) return false;
-    if (filterMonth !== 'all' && (d.getMonth() + 1).toString() !== filterMonth) return false;
-    return true;
-  });
-
   const allPics = users.filter(u => ['DESIGNER', 'TEAM_LEAD', 'MOTION_PIC'].includes(u.role_name));
   const workloadByPic = allPics.map(pic => {
-    const gd = workloadFilteredTasks.filter(t => t.design_pic_id === pic.id);
-    const mo = workloadFilteredMotion.filter(m => m.motion_pic_id === pic.id);
+    const gd = filteredTasks.filter(t => t.design_pic_id === pic.id);
+    const mo = filteredMotionTasks.filter(m => m.motion_pic_id === pic.id);
     
     return {
       name: pic.full_name,
@@ -130,24 +148,64 @@ export default function ReportsPage() {
     };
   }).filter(p => p.total > 0).sort((a, b) => b.total - a.total);
 
-  const availableYears = Array.from(new Set([
-    ...tasks.map(t => new Date(t.req_date).getFullYear().toString()),
-    ...motionTasks.map(m => new Date(m.created_at).getFullYear().toString())
-  ])).sort().reverse();
-
+  const getPeriodLabel = () => {
+    if (filterMonth === 'all' && filterYear === 'all') return 'All Time';
+    if (filterMonth === 'all') return `Year ${filterYear}`;
+    if (filterYear === 'all') return `${getMonthName(Number(filterMonth))} (All Years)`;
+    return `${getMonthName(Number(filterMonth))} ${filterYear}`;
+  };
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-bold text-[var(--text-primary)] flex items-center gap-2">
-          <BarChart3 className="w-5 h-5" style={{ color: 'var(--accent-cyan)' }} />
-          Reports & Analytics
-        </h1>
-        <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-          Operational performance reports and SLA analytics
-        </p>
+      {/* Page Header with Global Filter */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-xl font-bold text-[var(--text-primary)] flex items-center gap-2">
+            <BarChart3 className="w-5 h-5" style={{ color: 'var(--accent-cyan)' }} />
+            Reports & Analytics
+          </h1>
+          <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
+            Operational performance reports and SLA analytics • Cutoff: <strong className="text-[var(--text-primary)]">{getPeriodLabel()}</strong>
+          </p>
+        </div>
+
+        {/* Global Month & Year Filter Bar */}
+        <div className="flex flex-wrap items-center gap-3 bg-[var(--bg-card)] p-2 rounded-xl border border-[var(--border-primary)] shadow-sm">
+          <div className="flex items-center gap-2 px-2 py-1 bg-[var(--bg-secondary)] rounded-lg border border-[var(--border-secondary)]">
+            <Calendar className="w-4 h-4 text-[var(--accent-blue)]" />
+            
+            <select 
+              className="select border-none bg-transparent py-1 text-sm focus:ring-0 min-w-[120px] cursor-pointer" 
+              value={filterMonth} 
+              onChange={(e) => setFilterMonth(e.target.value)}
+            >
+              <option value="all">All Months</option>
+              {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                <option key={m} value={String(m).padStart(2, '0')}>{getMonthName(m)}</option>
+              ))}
+            </select>
+
+            <div className="w-px h-4 bg-[var(--border-primary)]"></div>
+
+            <select 
+              className="select border-none bg-transparent py-1 text-sm focus:ring-0 min-w-[100px] cursor-pointer" 
+              value={filterYear} 
+              onChange={(e) => setFilterYear(e.target.value)}
+            >
+              <option value="all">All Years</option>
+              {availableYears.map(y => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </div>
+
+          <span className="badge text-xs px-2.5 py-1 bg-cyan-500/10 text-cyan-400 border-cyan-500/30">
+            {getPeriodLabel()}
+          </span>
+        </div>
       </div>
 
+      {/* Tabs */}
       <div className="flex gap-4 border-b border-[var(--border-primary)] mb-6">
         <button
           className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${activeTab === 'GRAPHIC' ? 'border-[var(--accent-cyan)] text-[var(--text-primary)]' : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}
@@ -163,12 +221,12 @@ export default function ReportsPage() {
         </button>
       </div>
 
-      {/* Summary */}
+      {/* Summary Cards */}
       {activeTab === 'GRAPHIC' && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <div className="stat-card">
-            <p className="text-2xl font-bold text-[var(--text-primary)]">{tasks.length}</p>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Total Tasks</p>
+            <p className="text-2xl font-bold text-[var(--text-primary)]">{filteredTasks.length}</p>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Total Tasks ({getPeriodLabel()})</p>
           </div>
           <div className="stat-card">
             <p className="text-2xl font-bold text-[var(--text-primary)]">{completedTasks.length}</p>
@@ -192,23 +250,23 @@ export default function ReportsPage() {
       {activeTab === 'MOTION' && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <div className="stat-card">
-            <p className="text-2xl font-bold text-[var(--text-primary)]">{motionTasks.length}</p>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Total Tasks</p>
+            <p className="text-2xl font-bold text-[var(--text-primary)]">{filteredMotionTasks.length}</p>
+            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Total Tasks ({getPeriodLabel()})</p>
           </div>
           <div className="stat-card">
-            <p className="text-2xl font-bold text-[var(--accent-emerald)]">{motionTasks.filter(m => ['APPROVED', 'COMPLETED'].includes(m.status_motion)).length}</p>
+            <p className="text-2xl font-bold text-[var(--accent-emerald)]">{completedMotionTasks.length}</p>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Completed</p>
           </div>
           <div className="stat-card">
-            <p className="text-2xl font-bold text-[var(--accent-amber)]">{motionTasks.filter(m => m.status_motion === 'QUEUED').length}</p>
+            <p className="text-2xl font-bold text-[var(--accent-amber)]">{filteredMotionTasks.filter(m => m.status_motion === 'QUEUED').length}</p>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Queued</p>
           </div>
           <div className="stat-card">
-            <p className="text-2xl font-bold text-[var(--accent-blue)]">{motionTasks.filter(m => m.status_motion === 'IN_PROGRESS').length}</p>
+            <p className="text-2xl font-bold text-[var(--accent-blue)]">{filteredMotionTasks.filter(m => m.status_motion === 'IN_PROGRESS').length}</p>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>In Progress</p>
           </div>
           <div className="stat-card">
-            <p className="text-2xl font-bold text-[var(--accent-red)]">{motionTasks.filter(m => m.status_motion === 'REVISION').length}</p>
+            <p className="text-2xl font-bold text-[var(--accent-red)]">{filteredMotionTasks.filter(m => m.status_motion === 'REVISION').length}</p>
             <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Revision</p>
           </div>
         </div>
@@ -219,56 +277,41 @@ export default function ReportsPage() {
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
           <h3 className="font-semibold text-[var(--text-primary)] flex items-center gap-2">
             <Users className="w-5 h-5" style={{ color: 'var(--accent-blue)' }} />
-            Designer & Motion PIC Workload Tracking
+            Designer & Motion PIC Workload Tracking ({getPeriodLabel()})
           </h3>
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 bg-[var(--bg-secondary)] p-1 rounded-lg border border-[var(--border-primary)]">
-              <Calendar className="w-4 h-4 ml-2 text-[var(--text-muted)]" />
-              <select className="select border-none bg-transparent py-1 text-sm focus:ring-0 min-w-[120px]" value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)}>
-                <option value="all">All Months</option>
-                {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
-                  <option key={m} value={String(m).padStart(2, '0')}>{getMonthName(m)}</option>
-                ))}
-              </select>
-              <div className="w-px h-4 bg-[var(--border-primary)]"></div>
-              <select className="select border-none bg-transparent py-1 text-sm focus:ring-0 min-w-[100px]" value={filterYear} onChange={(e) => setFilterYear(e.target.value)}>
-                <option value="all">All Years</option>
-                {availableYears.map(y => (
-                  <option key={y} value={y}>{y}</option>
-                ))}
-              </select>
-            </div>
-            
             <button
               onClick={() => {
                 if (activeTab === 'GRAPHIC') {
-                  const data = users.filter(u => u.role_name === 'DESIGNER').map(u => {
-                    const uTasks = workloadFilteredTasks.filter(t => t.design_pic_id === u.id);
+                  const data = users.filter(u => ['DESIGNER', 'TEAM_LEAD'].includes(u.role_name)).map(u => {
+                    const uTasks = filteredTasks.filter(t => t.design_pic_id === u.id);
                     return {
                       'PIC Name': u.full_name,
+                      'Period': getPeriodLabel(),
                       'Total Assigned': uTasks.length,
                       'Completed': uTasks.filter(t => ['TASK_CLOSED', 'DESIGN_APPROVED'].includes(t.status_design)).length,
                       'In Progress': uTasks.filter(t => !['TASK_CLOSED', 'DESIGN_APPROVED'].includes(t.status_design)).length
                     };
                   });
-                  downloadCSV(data, 'Workload_Graphic.csv');
+                  downloadCSV(data, `Workload_Graphic_${filterYear}_${filterMonth}.csv`);
                 } else {
-                  const data = users.filter(u => u.role_name === 'MOTION_PIC').map(u => {
-                    const uTasks = workloadFilteredMotion.filter(t => t.motion_pic_id === u.id);
+                  const data = users.filter(u => ['MOTION_PIC', 'TEAM_LEAD'].includes(u.role_name)).map(u => {
+                    const uTasks = filteredMotionTasks.filter(t => t.motion_pic_id === u.id);
                     return {
                       'PIC Name': u.full_name,
+                      'Period': getPeriodLabel(),
                       'Total Assigned': uTasks.length,
                       'Completed': uTasks.filter(t => ['COMPLETED', 'APPROVED'].includes(t.status_motion)).length,
                       'In Progress': uTasks.filter(t => !['COMPLETED', 'APPROVED'].includes(t.status_motion)).length
                     };
                   });
-                  downloadCSV(data, 'Workload_Motion.csv');
+                  downloadCSV(data, `Workload_Motion_${filterYear}_${filterMonth}.csv`);
                 }
               }}
-              className="btn-outline text-xs px-2 py-1 h-auto border-[var(--border-primary)]"
+              className="btn-outline text-xs px-3 py-1.5 h-auto border-[var(--border-primary)]"
             >
-              <Download className="w-3 h-3 mr-1" />
-              CSV
+              <Download className="w-3.5 h-3.5 mr-1" />
+              Download CSV
             </button>
           </div>
         </div>
@@ -329,7 +372,7 @@ export default function ReportsPage() {
               {workloadByPic.filter(p => activeTab === 'GRAPHIC' ? (p.graphic.total > 0 || p.role.includes('DESIGNER')) : (p.motion.total > 0 || p.role.includes('MOTION'))).length === 0 && (
                 <tr>
                   <td colSpan={4} className="text-center py-8 text-sm" style={{ color: 'var(--text-muted)' }}>
-                    No tasks found for the selected period
+                    No tasks found for period {getPeriodLabel()}
                   </td>
                 </tr>
               )}
@@ -349,7 +392,6 @@ export default function ReportsPage() {
           <div className="space-y-3">
             {monthEntries.map(([month, data]) => {
               const [y, m] = month.split('-');
-              const maxVal = Math.max(...monthEntries.map(([, d]) => d.total));
               return (
                 <div key={month}>
                   <div className="flex items-center justify-between mb-1">
@@ -379,6 +421,9 @@ export default function ReportsPage() {
                 </div>
               );
             })}
+            {monthEntries.length === 0 && (
+              <p className="text-sm text-[var(--text-muted)] text-center py-4">No completed tasks in this period</p>
+            )}
           </div>
           <div className="flex gap-4 mt-4 pt-3" style={{ borderTop: '1px solid var(--border-primary)' }}>
             {(['EXCELLENCE', 'GOOD', 'BAD'] as OperationalExcellence[]).map(s => (
@@ -425,6 +470,11 @@ export default function ReportsPage() {
                     </td>
                   </tr>
                 ))}
+                {byBrand.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="text-center py-4 text-sm text-[var(--text-muted)]">No data for this period</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -467,6 +517,11 @@ export default function ReportsPage() {
                     </td>
                   </tr>
                 ))}
+                {byDesigner.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="text-center py-4 text-sm text-[var(--text-muted)]">No designer data for this period</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -502,7 +557,7 @@ export default function ReportsPage() {
                 {byMotionDesigner.length === 0 && (
                   <tr>
                     <td colSpan={3} className="text-center py-4 text-sm" style={{ color: 'var(--text-muted)' }}>
-                      No motion tasks completed yet
+                      No motion tasks completed in this period
                     </td>
                   </tr>
                 )}

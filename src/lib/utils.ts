@@ -135,3 +135,53 @@ export function debounce<T extends (...args: unknown[]) => unknown>(
     timeout = setTimeout(() => func(...args), wait);
   };
 }
+
+/**
+ * Sanitize URLs to prevent XSS (blocks javascript:, data:, vbscript:, etc.)
+ */
+export function sanitizeUrl(url: string | null | undefined, fallback: string = '#'): string {
+  if (!url || typeof url !== 'string') return fallback;
+  const trimmed = url.trim();
+  if (!trimmed) return fallback;
+
+  // Allow safe anchor/relative paths
+  if (trimmed === '#' || trimmed.startsWith('/') || trimmed.startsWith('./')) {
+    return trimmed;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    const protocol = parsed.protocol.toLowerCase();
+    // Only permit standard HTTP, HTTPS, or mailto protocols
+    if (protocol === 'http:' || protocol === 'https:' || protocol === 'mailto:') {
+      return trimmed;
+    }
+    return fallback;
+  } catch {
+    // If not a valid absolute URL, check if it's a safe relative path without scheme
+    if (/^[a-zA-Z0-9_\-\./]+$/.test(trimmed) && !trimmed.includes(':')) {
+      return trimmed;
+    }
+    return fallback;
+  }
+}
+
+/**
+ * Safe JSON parse with prototype pollution protection
+ */
+export function safeJsonParse<T>(jsonStr: string | null | undefined, fallback: T): T {
+  if (!jsonStr || typeof jsonStr !== 'string') return fallback;
+  try {
+    const parsed = JSON.parse(jsonStr);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      // Strip dangerous prototype keys
+      delete (parsed as any).__proto__;
+      delete (parsed as any).constructor;
+      delete (parsed as any).prototype;
+    }
+    return parsed as T;
+  } catch {
+    return fallback;
+  }
+}
+

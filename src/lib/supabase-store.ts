@@ -10,11 +10,12 @@ import {
   MotionTask, Notification, Role, TaskRevision, User,
   TaskWithRelations, CreateTaskInput, AssignTaskInput, SubmitTaskInput, RevisionInput,
   DesignStatus, MotionStatus, AuditAction, DesignerWorkload, DashboardStats,
-  ClientType, RoleName, DesignDifficulty, MotionDifficulty, Platform
+  ClientType, RoleName, DesignDifficulty, MotionDifficulty, Platform,
+  StratStatus, SubmitStrategicInput
 } from './types';
 import { DIFFICULTY_WEIGHTS } from './constants';
 import { calculateBusinessDays, evaluateOperationalExcellence } from './sla-engine';
-import { generateTaskCode, getCurrentYear } from './utils';
+import { generateTaskCode, getCurrentYear, safeJsonParse, sanitizeUrl } from './utils';
 
 // --- GETTERS (ASYNC) ---
 
@@ -60,13 +61,17 @@ export async function getMotionTasks(): Promise<MotionTask[]> {
   if (!supabase) return [];
   const { data, error } = await supabase.from('motion_tasks').select('*');
   if (error) throw error;
-  return (data || []).map((m: any) => ({
-    ...m,
-    link_motion: m.final_video_link || m.link_motion || null,
-    motion_difficulty: m.motion_difficulty || 'LVL_1_SIMPLE',
-    notes: m.notes || '',
-    apply_date: m.due_date ? m.due_date.substring(0, 10) : null
-  })) as MotionTask[];
+  return (data || []).map((m: any) => {
+    const rawLink = m.final_video_link || m.link_motion || null;
+    return {
+      ...m,
+      link_motion: rawLink ? sanitizeUrl(rawLink) : null,
+      final_video_link: m.final_video_link ? sanitizeUrl(m.final_video_link) : null,
+      motion_difficulty: m.motion_difficulty || 'LVL_1_SIMPLE',
+      notes: m.notes || '',
+      apply_date: m.due_date ? m.due_date.substring(0, 10) : null
+    };
+  }) as MotionTask[];
 }
 
 export async function getNotifications(userId: string): Promise<Notification[]> {
@@ -100,18 +105,41 @@ export async function getAllTasksWithRelations(): Promise<TaskWithRelations[]> {
 
   if (error) throw error;
 
-  return data.map((t: any) => ({
-    ...t,
-    client_name: t.client?.name || 'Unknown',
-    client_type: t.client?.client_type || 'EXTERNAL',
-    content_type_name: t.content_type?.name || 'Unknown',
-    design_pic_name: t.design_pic?.full_name || null,
-    strat_pic_name: t.strat_pic?.full_name || null,
-    created_by_name: t.created_by_user?.full_name || 'Unknown',
-    motion_task: t.motion_tasks && t.motion_tasks.length > 0 ? t.motion_tasks[0] : null,
-    motion_pic_name: (t.motion_tasks && t.motion_tasks.length > 0) ? t.motion_tasks[0].motion_pic?.full_name : null,
-    revisions: t.task_revisions || []
-  }));
+  return data.map((t: any) => {
+    let strat_concept_name: string | null = null;
+    let strat_concept_link: string | null = null;
+    let strat_submitted_at: string | null = null;
+    let displayNotes = t.notes || '';
+
+    if (t.notes && t.notes.includes('[STRAT_CONCEPT:')) {
+      const match = t.notes.match(/\[STRAT_CONCEPT:(\{[\s\S]*?\})\]/);
+      if (match) {
+        const parsed = safeJsonParse<{ name?: string; link?: string; submitted_at?: string }>(match[1], {});
+        strat_concept_name = parsed.name || null;
+        strat_concept_link = parsed.link ? sanitizeUrl(parsed.link) : null;
+        strat_submitted_at = parsed.submitted_at || null;
+        displayNotes = t.notes.replace(/\[STRAT_CONCEPT:\{[\s\S]*?\}\]\n?/g, '').trim();
+      }
+    }
+
+    return {
+      ...t,
+      final_asset_link: t.final_asset_link ? sanitizeUrl(t.final_asset_link) : null,
+      notes: displayNotes,
+      strat_concept_name,
+      strat_concept_link,
+      strat_submitted_at,
+      client_name: t.client?.name || 'Unknown',
+      client_type: t.client?.client_type || 'EXTERNAL',
+      content_type_name: t.content_type?.name || 'Unknown',
+      design_pic_name: t.design_pic?.full_name || null,
+      strat_pic_name: t.strat_pic?.full_name || null,
+      created_by_name: t.created_by_user?.full_name || 'Unknown',
+      motion_task: t.motion_tasks && t.motion_tasks.length > 0 ? t.motion_tasks[0] : null,
+      motion_pic_name: (t.motion_tasks && t.motion_tasks.length > 0) ? t.motion_tasks[0].motion_pic?.full_name : null,
+      revisions: t.task_revisions || []
+    };
+  });
 }
 
 // --- MUTATORS (ASYNC) ---
@@ -124,6 +152,10 @@ export async function createTask(input: CreateTaskInput, createdBy: string): Pro
   const seq = (count || 0) + 1;
   const taskCode = generateTaskCode(getCurrentYear(), seq);
 
+  const stratPicId = (input.requires_strategic_concept && input.strat_pic_id && input.strat_pic_id.trim() !== '') 
+    ? input.strat_pic_id 
+    : null;
+
   const newTask = {
     task_code: taskCode,
     client_id: input.client_id,
@@ -135,16 +167,19 @@ export async function createTask(input: CreateTaskInput, createdBy: string): Pro
     output_qty: input.req_qty,
     req_date: input.req_date,
     due_date: input.due_date,
-    requires_strategic_concept: input.requires_strategic_concept,
-    strat_pic_id: input.strat_pic_id || null,
+    requires_strategic_concept: Boolean(input.requires_strategic_concept),
+    strat_pic_id: stratPicId,
     status_strat: input.requires_strategic_concept ? 'PENDING' : 'NOT_REQUIRED',
     status_design: input.requires_strategic_concept ? 'STRAT_PENDING' : 'DESIGN_UNASSIGNED',
-    notes: input.notes,
+    notes: input.notes || '',
     created_by: createdBy
   };
 
   const { data, error } = await supabase.from('tasks').insert([newTask]).select().single();
-  if (error) throw error;
+  if (error) {
+    console.error('Supabase createTask error:', error);
+    throw new Error(error.message || error.details || 'Gagal membuat task');
+  }
   
   await addAuditLog('tasks', data.id, 'CREATE', createdBy, null, data);
   return data as CreativeTask;
@@ -181,22 +216,99 @@ export async function markNotificationAsRead(notifId: string): Promise<void> {
 }
 
 
-export async function assignTask(taskId: string, input: AssignTaskInput, performedBy: string, roleName: string): Promise<void> {
+export async function assignTask(taskId: string, input: AssignTaskInput, performedBy: string, roleName?: string): Promise<void> {
   if (!supabase) return;
+  
+  // Check current task status to ensure STRAT_PENDING phase is respected
+  const { data: currentTask } = await supabase
+    .from('tasks')
+    .select('status_design, requires_strategic_concept, status_strat, design_pic_id')
+    .eq('id', taskId)
+    .single();
+
+  const isStratPhase = currentTask?.status_design === 'STRAT_PENDING' || 
+    (currentTask?.requires_strategic_concept && currentTask?.status_strat !== 'APPROVED');
+
   const updates: any = {};
-  if (input.design_pic_id) {
-    updates.design_pic_id = input.design_pic_id;
-    updates.status_design = 'DESIGN_IN_PROGRESS';
-  }
-  if (input.strat_pic_id) {
+  if (input.strat_pic_id && input.strat_pic_id.trim() !== '') {
     updates.strat_pic_id = input.strat_pic_id;
-    updates.status_strat = 'STRAT_IN_PROGRESS';
+  }
+
+  if (input.design_pic_id && input.design_pic_id.trim() !== '') {
+    updates.design_pic_id = input.design_pic_id;
+    if (input.design_difficulty) updates.design_difficulty = input.design_difficulty;
+    // Only transition status to DESIGN_ASSIGNED if strategic phase is completed or not required
+    if (!isStratPhase) {
+      updates.status_design = 'DESIGN_ASSIGNED';
+    }
+  } else if (input.design_difficulty) {
+    updates.design_difficulty = input.design_difficulty;
   }
 
   const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
-  if (error) throw error;
+  if (error) {
+    console.error('Supabase assignTask error:', error);
+    throw new Error(error.message || error.details || 'Gagal assign task');
+  }
   await addAuditLog('tasks', taskId, 'ASSIGN', performedBy, null, updates);
 }
+
+export async function updateStratStatus(taskId: string, newStatus: StratStatus, userId: string): Promise<void> {
+  if (!supabase) return;
+  const updates: any = {
+    status_strat: newStatus,
+    updated_at: new Date().toISOString()
+  };
+  if (newStatus === 'APPROVED') {
+    const { data: currentTask } = await supabase.from('tasks').select('design_pic_id').eq('id', taskId).single();
+    if (currentTask?.design_pic_id) {
+      updates.status_design = 'DESIGN_ASSIGNED';
+    } else {
+      updates.status_design = 'DESIGN_UNASSIGNED';
+    }
+  }
+  const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
+  if (error) throw error;
+  await addAuditLog('creative_tasks', taskId, 'STATUS_TRANSITION', userId, null, updates);
+}
+
+export async function submitStrategicConcept(taskId: string, input: SubmitStrategicInput, userId: string): Promise<void> {
+  if (!supabase) return;
+  const { data: currentTask } = await supabase.from('tasks').select('notes').eq('id', taskId).single();
+  const rawNotes = currentTask?.notes || '';
+  const baseNotes = rawNotes.replace(/\[STRAT_CONCEPT:\{[\s\S]*?\}\]\n?/g, '').trim();
+  const deckName = input.strat_concept_name || 'Strategic Concept Deck';
+  const deckLink = input.strat_concept_link || input.strat_link || '';
+  const submittedAt = new Date().toISOString();
+
+  const stratMetadata = JSON.stringify({
+    name: deckName,
+    link: deckLink,
+    submitted_at: submittedAt
+  });
+
+  const finalNotes = input.notes 
+    ? `[STRAT_CONCEPT:${stratMetadata}]\n${input.notes}`
+    : (baseNotes ? `[STRAT_CONCEPT:${stratMetadata}]\n${baseNotes}` : `[STRAT_CONCEPT:${stratMetadata}]`);
+
+  const updates: any = {
+    status_strat: 'REVIEW',
+    notes: finalNotes,
+    updated_at: new Date().toISOString()
+  };
+
+  const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
+  if (error) {
+    console.error('Supabase submitStrategicConcept error:', error);
+    throw new Error(error.message || error.details || 'Gagal submit Strategic Concept');
+  }
+  await addAuditLog('creative_tasks', taskId, 'SUBMIT', userId, null, {
+    strat_concept_name: deckName,
+    strat_concept_link: deckLink,
+    status_strat: 'REVIEW'
+  });
+}
+
 
 export async function updateTaskStatus(taskId: string, newStatus: DesignStatus, userId: string): Promise<void> {
   if (!supabase) return;
@@ -312,11 +424,64 @@ export async function setMotionReadyness(taskId: string, isReady: boolean, perfo
 }
 
 
-export async function editTask(taskId: string, input: Partial<CreateTaskInput>, updatedBy: string): Promise<void> {
+export async function editTask(taskId: string, input: Partial<CreateTaskInput>, updatedBy: string, userRole?: string): Promise<void> {
   if (!supabase) return;
-  const updates: any = { ...input, updated_at: new Date().toISOString() };
+  if (userRole === 'REQUESTER') {
+    const { data: currentTask } = await supabase.from('tasks').select('created_by').eq('id', taskId).single();
+    if (currentTask && currentTask.created_by !== updatedBy) {
+      throw new Error('Unauthorized: Requester only allowed to edit tasks they created.');
+    }
+  }
+
+  const stratPicId = (input.requires_strategic_concept && input.strat_pic_id && input.strat_pic_id.trim() !== '')
+    ? input.strat_pic_id
+    : null;
+
+  const updates: Record<string, any> = {
+    updated_at: new Date().toISOString()
+  };
+
+  if (input.client_id !== undefined) updates.client_id = input.client_id;
+  if (input.campaign_name !== undefined) updates.campaign_name = input.campaign_name;
+  if (input.content_type_id !== undefined) updates.content_type_id = input.content_type_id;
+  if (input.task_source !== undefined) updates.task_source = input.task_source;
+  if (input.platform !== undefined) updates.platform = input.platform;
+  if (input.req_qty !== undefined) {
+    updates.req_qty = input.req_qty;
+    updates.output_qty = input.req_qty;
+  }
+  if (input.req_date !== undefined) updates.req_date = input.req_date;
+  if (input.due_date !== undefined) updates.due_date = input.due_date;
+  if (input.notes !== undefined) {
+    const { data: currentTaskNotes } = await supabase.from('tasks').select('notes').eq('id', taskId).single();
+    if (currentTaskNotes?.notes && currentTaskNotes.notes.includes('[STRAT_CONCEPT:')) {
+      const match = currentTaskNotes.notes.match(/\[STRAT_CONCEPT:\{[\s\S]*?\}\]/);
+      if (match) {
+        updates.notes = input.notes ? `${match[0]}\n${input.notes}` : match[0];
+      } else {
+        updates.notes = input.notes || '';
+      }
+    } else {
+      updates.notes = input.notes || '';
+    }
+  }
+  if (input.requires_strategic_concept !== undefined) {
+    updates.requires_strategic_concept = Boolean(input.requires_strategic_concept);
+    if (!input.requires_strategic_concept) {
+      updates.strat_pic_id = null;
+      updates.status_strat = 'NOT_REQUIRED';
+    } else {
+      updates.strat_pic_id = stratPicId;
+    }
+  } else if (input.strat_pic_id !== undefined) {
+    updates.strat_pic_id = stratPicId;
+  }
+
   const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
-  if (error) throw error;
+  if (error) {
+    console.error('Supabase editTask error:', error);
+    throw new Error(error.message || error.details || 'Gagal menyimpan perubahan task');
+  }
   await addAuditLog('tasks', taskId, 'UPDATE', updatedBy, null, updates);
 }
 
@@ -336,15 +501,22 @@ export async function getAuditLogs(): Promise<AuditLog[]> {
   return data as AuditLog[];
 }
 
-export async function getDesignerWorkloads(): Promise<DesignerWorkload[]> {
+export async function getDesignerWorkloads(filterMonth?: string, filterYear?: string): Promise<DesignerWorkload[]> {
   const users = await getUsers();
   const designers = users.filter(u => u.role_name === 'DESIGNER' || u.role_name === 'TEAM_LEAD');
-  const tasks = await getTasks();
+  let tasks = await getTasks();
+
+  if (filterYear && filterYear !== 'all') {
+    tasks = tasks.filter(t => new Date(t.req_date).getFullYear().toString() === filterYear);
+  }
+  if (filterMonth && filterMonth !== 'all') {
+    tasks = tasks.filter(t => String(new Date(t.req_date).getMonth() + 1).padStart(2, '0') === filterMonth);
+  }
 
   return designers.filter(u => u.daily_capacity_points > 0).map(user => {
     const activeTasks = tasks.filter(
       t => t.design_pic_id === user.id &&
-        !['TASK_CLOSED', 'DESIGN_APPROVED'].includes(t.status_design)
+        !['TASK_CLOSED'].includes(t.status_design)
     );
 
     const accumulated = activeTasks.reduce((sum, t) => {
@@ -374,32 +546,81 @@ export async function getDesignerWorkloads(): Promise<DesignerWorkload[]> {
   });
 }
 
-export async function getDashboardStats(): Promise<DashboardStats> {
-  const tasks = await getAllTasksWithRelations();
-  const motionTasks = await getMotionTasks();
-  const currentMonth = new Date().getMonth();
-  const currentYear = new Date().getFullYear();
+export async function getDashboardStats(
+  filterMonthOrOptions?: string | { filterMonth?: string; filterYear?: string; filterDateFrom?: string; filterDateTo?: string },
+  filterYearArg?: string,
+  filterDateFromArg?: string,
+  filterDateToArg?: string
+): Promise<DashboardStats> {
+  let filterMonth: string | undefined;
+  let filterYear: string | undefined;
+  let filterDateFrom: string | undefined;
+  let filterDateTo: string | undefined;
 
-  const thisMonthTasks = tasks.filter(t => {
-    const d = new Date(t.req_date);
-    return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
-  });
+  if (typeof filterMonthOrOptions === 'object' && filterMonthOrOptions !== null) {
+    filterMonth = filterMonthOrOptions.filterMonth;
+    filterYear = filterMonthOrOptions.filterYear;
+    filterDateFrom = filterMonthOrOptions.filterDateFrom;
+    filterDateTo = filterMonthOrOptions.filterDateTo;
+  } else {
+    filterMonth = filterMonthOrOptions;
+    filterYear = filterYearArg;
+    filterDateFrom = filterDateFromArg;
+    filterDateTo = filterDateToArg;
+  }
 
+  let tasks = await getAllTasksWithRelations();
+  let motionTasks = await getMotionTasks();
+
+  // Apply date range / month filter if provided
+  if (filterDateFrom && filterDateTo) {
+    tasks = tasks.filter(t => {
+      const d = t.req_date ? t.req_date.substring(0, 10) : '';
+      return d >= filterDateFrom! && d <= filterDateTo!;
+    });
+    motionTasks = motionTasks.filter(m => {
+      const d = m.created_at ? m.created_at.substring(0, 10) : '';
+      return d >= filterDateFrom! && d <= filterDateTo!;
+    });
+  } else {
+    if (filterYear && filterYear !== 'all') {
+      tasks = tasks.filter(t => {
+        const dStr = t.req_date || t.created_at || '';
+        return dStr.substring(0, 4) === filterYear;
+      });
+      motionTasks = motionTasks.filter(m => {
+        const dStr = m.created_at || '';
+        return dStr.substring(0, 4) === filterYear;
+      });
+    }
+    if (filterMonth && filterMonth !== 'all') {
+      tasks = tasks.filter(t => {
+        const dStr = t.req_date || t.created_at || '';
+        return dStr.substring(5, 7) === filterMonth;
+      });
+      motionTasks = motionTasks.filter(m => {
+        const dStr = m.created_at || '';
+        return dStr.substring(5, 7) === filterMonth;
+      });
+    }
+  }
+
+  const thisPeriodTasks = tasks;
   const activeTasks = tasks.filter(t => !['TASK_CLOSED'].includes(t.status_design));
-  const submittedOrApproved = thisMonthTasks.filter(t => t.operational_excellence);
+  const submittedOrApproved = thisPeriodTasks.filter(t => t.operational_excellence);
   const excellenceCount = submittedOrApproved.filter(t => t.operational_excellence === 'EXCELLENCE').length;
 
   return {
     active_tasks: activeTasks.length,
-    unassigned_tasks: tasks.filter(t => t.status_design === 'DESIGN_UNASSIGNED').length,
-    in_progress_tasks: tasks.filter(t => t.status_design === 'DESIGN_IN_PROGRESS').length,
+    unassigned_tasks: tasks.filter(t => t.status_design === 'DESIGN_UNASSIGNED' || t.status_design === 'STRAT_PENDING').length,
+    in_progress_tasks: tasks.filter(t => t.status_design === 'DESIGN_IN_PROGRESS' || t.status_design === 'DESIGN_ASSIGNED').length,
     submitted_tasks: tasks.filter(t => t.status_design === 'DESIGN_SUBMITTED').length,
-    completed_tasks: tasks.filter(t => t.status_design === 'TASK_CLOSED').length,
+    completed_tasks: tasks.filter(t => t.status_design === 'TASK_CLOSED' || t.status_design === 'DESIGN_APPROVED').length,
     motion_queue: motionTasks.filter(mt => mt.status_motion === 'QUEUED' || mt.status_motion === 'IN_PROGRESS').length,
     sla_compliance_rate: submittedOrApproved.length > 0
       ? (excellenceCount / submittedOrApproved.length) * 100
       : 100,
-    total_tasks_this_month: thisMonthTasks.length,
+    total_tasks_this_month: thisPeriodTasks.length,
     approaching_deadline: activeTasks.filter(t => {
       if (!t.due_date) return false;
       const due = new Date(t.due_date);
@@ -412,6 +633,7 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     }),
   };
 }
+
 
 export async function addClient(name: string, clientType: ClientType): Promise<Client | null> {
   if (!supabase) return null;
@@ -481,6 +703,17 @@ export async function deleteUser(userId: string): Promise<void> {
   if (error) throw error;
 }
 
+export async function updateUserCapacity(userId: string, dailyCapacityPoints: number): Promise<void> {
+  if (!supabase) return;
+  const { error } = await supabase.from('users')
+    .update({ 
+      daily_capacity_points: dailyCapacityPoints,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', userId);
+  if (error) throw error;
+}
+
 export async function registerUser(email: string, fullName: string, passwordHash: string): Promise<boolean> {
   if (!supabase) return false;
   const avatar_initials = fullName.substring(0, 2).toUpperCase();
@@ -504,6 +737,7 @@ export interface CreateStandaloneMotionInput {
   motion_type: string;
   campaign_type: string;
   motion_pic_id: string | null;
+  motion_difficulty?: MotionDifficulty;
   production_date: string;
   period_start: string;
   period_end: string;
@@ -575,7 +809,7 @@ export async function createStandaloneMotionTask(input: CreateStandaloneMotionIn
     period_start: input.period_start,
     period_end: input.period_end,
     studio: input.studio,
-    motion_difficulty: 'LVL_1_SIMPLE',
+    motion_difficulty: input.motion_difficulty || 'LVL_1_SIMPLE',
     link_motion: null,
     notes: ''
   };
@@ -614,6 +848,8 @@ export async function assignOperatorToMotionTask(motionTaskId: string, operatorI
   const { data: motion } = await supabase.from('motion_tasks').select('*').eq('id', motionTaskId).single();
   if (!motion) return;
 
+  const validOperatorId = operatorId && operatorId.trim() !== '' ? operatorId : null;
+
   await supabase.from('motion_tasks').update({
     status_motion: 'COMPLETED',
     updated_at: new Date().toISOString()
@@ -621,25 +857,31 @@ export async function assignOperatorToMotionTask(motionTaskId: string, operatorI
 
   if (motion.task_id) {
     await supabase.from('tasks').update({
-      operator_id: operatorId,
+      operator_id: validOperatorId,
       updated_at: new Date().toISOString()
     }).eq('id', motion.task_id);
   }
 
-  await addAuditLog('motion_tasks', motionTaskId, 'STATUS_TRANSITION', userId, { status: motion.status_motion }, { status: 'COMPLETED', operator_id: operatorId });
+  await addAuditLog('motion_tasks', motionTaskId, 'STATUS_TRANSITION', userId, { status: motion.status_motion }, { status: 'COMPLETED', operator_id: validOperatorId });
 }
 
-export async function assignMotionPic(motionTaskId: string, motionPicId: string, userIdOrDiff?: string | MotionDifficulty, difficulty?: MotionDifficulty): Promise<void> {
+export async function assignMotionPic(motionTaskId: string, motionPicId: string, userId?: string, difficulty?: MotionDifficulty): Promise<void> {
   if (!supabase) return;
+  const validPicId = motionPicId && motionPicId.trim() !== '' ? motionPicId : null;
   const updates: any = {
-    motion_pic_id: motionPicId,
+    motion_pic_id: validPicId,
     updated_at: new Date().toISOString()
   };
-  const diff = typeof userIdOrDiff === 'string' && userIdOrDiff.startsWith('LVL_') ? userIdOrDiff : difficulty;
-  if (diff) updates.motion_difficulty = diff;
   const { error } = await supabase.from('motion_tasks').update(updates).eq('id', motionTaskId);
-  if (error) throw error;
+  if (error) {
+    console.error('Supabase assignMotionPic error:', error);
+    throw new Error(error.message || error.details || 'Gagal assign Motion PIC');
+  }
+  if (userId) {
+    await addAuditLog('motion_tasks', motionTaskId, 'ASSIGN', userId, null, { motion_pic_id: validPicId, difficulty });
+  }
 }
+
 
 export async function updateMotionStatus(motionTaskId: string, status: MotionStatus): Promise<void> {
   if (!supabase) return;

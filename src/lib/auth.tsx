@@ -5,7 +5,7 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { User } from './types';
-import { supabase } from './supabase';
+import { safeJsonParse } from './utils';
 
 interface AuthContextType {
   user: User | null;
@@ -28,15 +28,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem('cmoms_current_user');
-    if (storedUser) {
-      try {
-        setUser(JSON.parse(storedUser));
-      } catch {
-        localStorage.removeItem('cmoms_current_user');
+    try {
+      const storedUser = localStorage.getItem('cmoms_current_user');
+      if (storedUser) {
+        const parsed = safeJsonParse<User | null>(storedUser, null);
+        if (parsed && parsed.id && parsed.email) {
+          setUser(parsed);
+        } else {
+          localStorage.removeItem('cmoms_current_user');
+        }
       }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   }, []);
 
   const login = useCallback(async (email: string, password: string): Promise<boolean> => {

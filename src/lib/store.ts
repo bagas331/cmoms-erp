@@ -8,7 +8,7 @@ import {
   MotionTask, Notification, Role, TaskRevision, User,
   TaskWithRelations, DesignerWorkload, DashboardStats,
   CreateTaskInput, AssignTaskInput, SubmitTaskInput, RevisionInput,
-  DesignStatus, MotionStatus, AuditAction,
+  DesignStatus, MotionStatus, AuditAction, StratStatus, SubmitStrategicInput, MotionDifficulty
 } from './types';
 import {
   SEED_ROLES, SEED_USERS, SEED_CLIENTS, SEED_CONTENT_TYPES,
@@ -17,7 +17,7 @@ import {
 } from './seed-data';
 import { DIFFICULTY_WEIGHTS } from './constants';
 import { calculateBusinessDays, evaluateOperationalExcellence, formatDate } from './sla-engine';
-import { generateUUID, generateTaskCode, now, getCurrentYear } from './utils';
+import { generateUUID, generateTaskCode, now, getCurrentYear, safeJsonParse, sanitizeUrl } from './utils';
 
 const STORE_KEYS = {
   roles: 'cmoms_roles',
@@ -40,7 +40,7 @@ function getStore<T>(key: string, fallback: T[]): T[] {
   if (typeof window === 'undefined') return fallback;
   const data = localStorage.getItem(key);
   if (!data) return fallback;
-  try { return JSON.parse(data); } catch { return fallback; }
+  return safeJsonParse<T[]>(data, fallback);
 }
 
 function setStore<T>(key: string, data: T[]): void {
@@ -158,14 +158,21 @@ export function getAllTasksWithRelations(): TaskWithRelations[] {
   return getTasks().map(task => getTaskWithRelations(task.id)!).filter(Boolean);
 }
 
-export function getDesignerWorkloads(): DesignerWorkload[] {
+export function getDesignerWorkloads(filterMonth?: string, filterYear?: string): DesignerWorkload[] {
   const users = getUsers().filter(u => u.role_name === 'DESIGNER' || u.role_name === 'TEAM_LEAD');
-  const tasks = getTasks();
+  let tasks = getTasks();
+
+  if (filterYear && filterYear !== 'all') {
+    tasks = tasks.filter(t => new Date(t.req_date).getFullYear().toString() === filterYear);
+  }
+  if (filterMonth && filterMonth !== 'all') {
+    tasks = tasks.filter(t => String(new Date(t.req_date).getMonth() + 1).padStart(2, '0') === filterMonth);
+  }
 
   return users.filter(u => u.daily_capacity_points > 0).map(user => {
     const activeTasks = tasks.filter(
       t => t.design_pic_id === user.id &&
-        !['TASK_CLOSED', 'DESIGN_APPROVED'].includes(t.status_design)
+        !['TASK_CLOSED'].includes(t.status_design)
     );
 
     const accumulated = activeTasks.reduce((sum, t) => {
@@ -195,31 +202,46 @@ export function getDesignerWorkloads(): DesignerWorkload[] {
   });
 }
 
-export function getDashboardStats(): DashboardStats {
-  const tasks = getAllTasksWithRelations();
-  const currentMonth = new Date().getMonth();
-  const currentYear = new Date().getFullYear();
+export function getDashboardStats(filterMonth?: string, filterYear?: string, filterDateFrom?: string, filterDateTo?: string): DashboardStats {
+  let tasks = getAllTasksWithRelations();
+  let motionTasks = getMotionTasks();
 
-  const thisMonthTasks = tasks.filter(t => {
-    const d = new Date(t.req_date);
-    return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
-  });
+  if (filterDateFrom && filterDateTo) {
+    tasks = tasks.filter(t => {
+      const d = t.req_date ? t.req_date.substring(0, 10) : '';
+      return d >= filterDateFrom && d <= filterDateTo;
+    });
+    motionTasks = motionTasks.filter(m => {
+      const d = m.created_at ? m.created_at.substring(0, 10) : '';
+      return d >= filterDateFrom && d <= filterDateTo;
+    });
+  } else {
+    if (filterYear && filterYear !== 'all') {
+      tasks = tasks.filter(t => new Date(t.req_date).getFullYear().toString() === filterYear);
+      motionTasks = motionTasks.filter(m => new Date(m.created_at).getFullYear().toString() === filterYear);
+    }
+    if (filterMonth && filterMonth !== 'all') {
+      tasks = tasks.filter(t => String(new Date(t.req_date).getMonth() + 1).padStart(2, '0') === filterMonth);
+      motionTasks = motionTasks.filter(m => String(new Date(m.created_at).getMonth() + 1).padStart(2, '0') === filterMonth);
+    }
+  }
 
+  const thisPeriodTasks = tasks;
   const activeTasks = tasks.filter(t => !['TASK_CLOSED'].includes(t.status_design));
-  const submittedOrApproved = thisMonthTasks.filter(t => t.operational_excellence);
+  const submittedOrApproved = thisPeriodTasks.filter(t => t.operational_excellence);
   const excellenceCount = submittedOrApproved.filter(t => t.operational_excellence === 'EXCELLENCE').length;
 
   return {
     active_tasks: activeTasks.length,
-    unassigned_tasks: tasks.filter(t => t.status_design === 'DESIGN_UNASSIGNED').length,
-    in_progress_tasks: tasks.filter(t => t.status_design === 'DESIGN_IN_PROGRESS').length,
+    unassigned_tasks: tasks.filter(t => t.status_design === 'DESIGN_UNASSIGNED' || t.status_design === 'STRAT_PENDING').length,
+    in_progress_tasks: tasks.filter(t => t.status_design === 'DESIGN_IN_PROGRESS' || t.status_design === 'DESIGN_ASSIGNED').length,
     submitted_tasks: tasks.filter(t => t.status_design === 'DESIGN_SUBMITTED').length,
-    completed_tasks: tasks.filter(t => t.status_design === 'TASK_CLOSED').length,
-    motion_queue: getMotionTasks().filter(mt => mt.status_motion === 'QUEUED' || mt.status_motion === 'IN_PROGRESS').length,
+    completed_tasks: tasks.filter(t => t.status_design === 'TASK_CLOSED' || t.status_design === 'DESIGN_APPROVED').length,
+    motion_queue: motionTasks.filter(mt => mt.status_motion === 'QUEUED' || mt.status_motion === 'IN_PROGRESS').length,
     sla_compliance_rate: submittedOrApproved.length > 0
       ? (excellenceCount / submittedOrApproved.length) * 100
-      : 0,
-    total_tasks_this_month: thisMonthTasks.length,
+      : 100,
+    total_tasks_this_month: thisPeriodTasks.length,
     approaching_deadline: activeTasks.filter(t => {
       const due = new Date(t.due_date);
       const today = new Date();
@@ -235,6 +257,7 @@ export function getDashboardStats(): DashboardStats {
     }),
   };
 }
+
 
 // --- MUTATORS ---
 export function addComment(taskId: string, userId: string, content: string): TaskComment {
@@ -315,6 +338,16 @@ export function registerUser(email: string, full_name: string, password_hash: st
   users[userIdx].is_registered = true;
   users[userIdx].updated_at = now();
   
+  setStore(STORE_KEYS.users, users);
+  return true;
+}
+
+export function updateUserCapacity(userId: string, dailyCapacityPoints: number): boolean {
+  const users = getUsers();
+  const idx = users.findIndex(u => u.id === userId);
+  if (idx === -1) return false;
+  users[idx].daily_capacity_points = dailyCapacityPoints;
+  users[idx].updated_at = now();
   setStore(STORE_KEYS.users, users);
   return true;
 }
@@ -450,36 +483,99 @@ export function editTask(taskId: string, input: CreateTaskInput, editedBy: strin
 }
 
 export function assignTask(taskId: string, input: AssignTaskInput, assignedBy: string): void {
-  if (!input.design_pic_id) return;
   const tasks = getTasks();
   const idx = tasks.findIndex(t => t.id === taskId);
   if (idx === -1) return;
 
   const task = tasks[idx];
-  const beforeState = { design_pic: task.design_pic_id, status_design: task.status_design, difficulty: task.design_difficulty };
+  const beforeState = { design_pic: task.design_pic_id, status_design: task.status_design, difficulty: task.design_difficulty, strat_pic_id: task.strat_pic_id };
 
-  task.design_pic_id = input.design_pic_id;
-  task.design_difficulty = input.design_difficulty || null;
-  task.status_design = 'DESIGN_ASSIGNED';
+  if (input.strat_pic_id) {
+    task.strat_pic_id = input.strat_pic_id;
+  }
+
+  const isStratPhase = task.status_design === 'STRAT_PENDING' || (task.requires_strategic_concept && task.status_strat !== 'APPROVED');
+
+  if (input.design_pic_id) {
+    task.design_pic_id = input.design_pic_id;
+    if (input.design_difficulty) task.design_difficulty = input.design_difficulty;
+    if (!isStratPhase) {
+      task.status_design = 'DESIGN_ASSIGNED';
+    }
+  } else if (input.design_difficulty) {
+    task.design_difficulty = input.design_difficulty;
+  }
+
+  task.updated_at = now();
+  tasks[idx] = task;
+  setStore(STORE_KEYS.tasks, tasks);
+
+  const designer = input.design_pic_id ? getUserById(input.design_pic_id) : null;
+  addAuditLog('creative_tasks', task.task_code, 'ASSIGN', assignedBy, beforeState, {
+    design_pic: designer?.full_name,
+    status_design: task.status_design,
+    difficulty: task.design_difficulty,
+    strat_pic_id: task.strat_pic_id,
+  });
+
+  if (input.design_pic_id && !isStratPhase) {
+    addNotification(input.design_pic_id, 'Task Assigned',
+      `Anda ditugaskan mengerjakan ${task.task_code} - ${getClientById(task.client_id)?.name} (${input.design_difficulty}). Due: ${task.due_date}.`,
+      'info', '/dashboard/tasks'
+    );
+  }
+}
+
+export function updateStratStatus(taskId: string, newStatus: StratStatus, userId: string): void {
+  const tasks = getTasks();
+  const idx = tasks.findIndex(t => t.id === taskId);
+  if (idx === -1) return;
+
+  const task = tasks[idx];
+  const beforeState = { status_strat: task.status_strat };
+  task.status_strat = newStatus;
+  if (newStatus === 'APPROVED') {
+    task.status_design = task.design_pic_id ? 'DESIGN_ASSIGNED' : 'DESIGN_UNASSIGNED';
+  }
   task.updated_at = now();
 
   tasks[idx] = task;
   setStore(STORE_KEYS.tasks, tasks);
 
-  const designer = getUserById(input.design_pic_id);
-  addAuditLog('creative_tasks', task.task_code, 'ASSIGN', assignedBy, beforeState, {
-    design_pic: designer?.full_name,
-    status_design: 'DESIGN_ASSIGNED',
-    difficulty: input.design_difficulty,
+  addAuditLog('creative_tasks', task.task_code, 'STATUS_TRANSITION', userId, beforeState, {
+    status_strat: newStatus,
+    status_design: task.status_design
   });
+}
 
-  addNotification(input.design_pic_id, 'Task Assigned',
-    `Anda ditugaskan mengerjakan ${task.task_code} - ${getClientById(task.client_id)?.name} (${input.design_difficulty}). Due: ${task.due_date}.`,
-    'info', '/dashboard/tasks'
-  );
+export function submitStrategicConcept(taskId: string, input: SubmitStrategicInput, userId: string): void {
+  const tasks = getTasks();
+  const idx = tasks.findIndex(t => t.id === taskId);
+  if (idx === -1) return;
+
+  const task = tasks[idx];
+  task.status_strat = 'REVIEW';
+  task.strat_concept_name = input.strat_concept_name || 'Strategic Concept Deck';
+  task.strat_concept_link = input.strat_concept_link || input.strat_link || '';
+  task.strat_submitted_at = now();
+  if (input.notes) {
+    task.notes = input.notes;
+  }
+  task.updated_at = now();
+
+  tasks[idx] = task;
+  setStore(STORE_KEYS.tasks, tasks);
+
+  addAuditLog('creative_tasks', task.task_code, 'SUBMIT', userId, null, {
+    status_strat: 'REVIEW',
+    strat_concept_name: task.strat_concept_name,
+    strat_concept_link: task.strat_concept_link,
+    notes: input.notes
+  });
 }
 
 export function updateTaskStatus(taskId: string, newStatus: DesignStatus, userId: string): void {
+
   const tasks = getTasks();
   const idx = tasks.findIndex(t => t.id === taskId);
   if (idx === -1) return;

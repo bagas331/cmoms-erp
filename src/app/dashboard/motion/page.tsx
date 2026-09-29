@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react';
 import { getMotionTasks, getAllTasksWithRelations, getUsers, assignMotionPic, updateMotionStatus, submitMotionTask, getClients, createStandaloneMotionTask, assignOperatorToMotionTask, editStandaloneMotionTask } from '@/lib/supabase-store';
 import { MOTION_KANBAN_COLUMNS, MOTION_STATUS_COLORS, MOTION_STATUS_LABELS, MOTION_DIFFICULTY_LABELS } from '@/lib/constants';
-import { formatDisplayDate } from '@/lib/utils';
-import { MotionStatus, MotionTask, TaskWithRelations, User as UserType, Client } from '@/lib/types';
+import { formatDisplayDate, sanitizeUrl } from '@/lib/utils';
+import { MotionStatus, MotionTask, TaskWithRelations, User as UserType, Client, MotionDifficulty } from '@/lib/types';
 
 import { useAuth } from '@/lib/auth';
 import { Film, User, Clock, Play, CheckCircle2, Eye, X, Undo2, ExternalLink, Search, ChevronDown, Filter, Edit2 } from 'lucide-react';
@@ -313,8 +313,11 @@ export default function MotionPage() {
                     <p className="font-medium text-sm text-[var(--text-primary)] mb-1">
                       {mt.parentTask?.client_name || allClients.find(c => c.id === mt.client_id)?.name || 'Unknown Client'}
                     </p>
-                    <p className="text-xs mb-3 truncate" style={{ color: 'var(--text-muted)' }}>
+                    <p className="text-xs mb-1 truncate" style={{ color: 'var(--text-muted)' }}>
                       {mt.parentTask?.campaign_name || mt.campaign_type || 'Standalone Request'}
+                    </p>
+                    <p className="text-[11px] mb-2" style={{ color: 'var(--text-secondary)' }}>
+                      <span className="text-[var(--text-muted)]">Req:</span> {mt.parentTask?.created_by_name || 'Requester'}
                     </p>
                     
                     {mt.motion_pic_id && (
@@ -327,7 +330,7 @@ export default function MotionPage() {
                     )}
 
                     {mt.link_motion && (
-                      <a href={mt.link_motion} target="_blank" rel="noopener noreferrer"
+                      <a href={sanitizeUrl(mt.link_motion)} target="_blank" rel="noopener noreferrer"
                         className="text-[11px] flex items-center gap-1 mb-2 hover:underline" style={{ color: 'var(--accent-blue)' }}>
                         <Film className="w-3 h-3" /> View Output
                       </a>
@@ -335,7 +338,7 @@ export default function MotionPage() {
 
                     {/* Actions */}
                     <div className="flex flex-wrap gap-1 mt-3 pt-3" style={{ borderTop: '1px solid var(--border-secondary)' }}>
-                      {/* Edit */}
+                      {/* Edit Standalone */}
                       {['ADMIN', 'TEAM_LEAD', 'MOTION_PIC'].includes(user.role_name) && !mt.parentTask && (
                         <button onClick={(e) => { e.stopPropagation(); setShowEditModal(mt.id); }}
                           className="btn-ghost text-xs py-1 px-2" style={{ color: 'var(--text-secondary)' }}>
@@ -344,7 +347,12 @@ export default function MotionPage() {
                       )}
                       {mt.status_motion === 'QUEUED' && !mt.motion_pic_id && ['ADMIN', 'TEAM_LEAD'].includes(user.role_name) && (
                         <button onClick={(e) => { e.stopPropagation(); setShowAssign(mt.id); }} className="btn-ghost text-xs py-1 px-2" style={{ color: 'var(--accent-blue)' }}>
-                          <User className="w-3 h-3" /> Assign
+                          <User className="w-3 h-3" /> Assign PIC
+                        </button>
+                      )}
+                      {mt.status_motion === 'QUEUED' && mt.motion_pic_id && ['ADMIN', 'TEAM_LEAD'].includes(user.role_name) && (
+                        <button onClick={(e) => { e.stopPropagation(); setShowAssign(mt.id); }} className="btn-ghost text-xs py-1 px-2" style={{ color: 'var(--accent-blue)' }} title="Edit PIC Assignment">
+                          <User className="w-3 h-3" /> Edit PIC
                         </button>
                       )}
                       {mt.status_motion === 'QUEUED' && mt.motion_pic_id && (mt.motion_pic_id === user.id || ['ADMIN', 'TEAM_LEAD'].includes(user.role_name)) && (
@@ -407,31 +415,15 @@ export default function MotionPage() {
         })}
       </div>
 
-      {/* Assign Motion PIC Modal */}
+      {/* Assign / Edit Motion PIC Modal */}
       {showAssign && (
-        <div className="modal-overlay" onClick={() => setShowAssign(null)}>
-          <div className="modal-content max-w-sm w-full" onClick={e => e.stopPropagation()}>
-            <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border-primary)', background: 'var(--bg-card)' }}>
-              <h2 className="text-lg font-bold text-[var(--text-primary)]">Assign Motion PIC</h2>
-              <button onClick={() => setShowAssign(null)} className="btn-ghost p-1.5 rounded-full hover:bg-[var(--bg-tertiary)]"><X className="w-5 h-5" /></button>
-            </div>
-            <div className="p-6 space-y-4">
-              {motionUsers.map(mu => (
-                <button key={mu.id} onClick={async () => { await assignMotionPic(showAssign, mu.id, user.id); setShowAssign(null); await refresh(); }}
-                  className="w-full p-4 rounded-xl text-left transition-all flex items-center gap-4 border border-transparent hover:border-blue-500 hover:shadow-md"
-                  style={{ background: 'var(--bg-tertiary)' }}>
-                  <div className="w-10 h-10 rounded-lg flex items-center justify-center text-sm font-bold text-white shadow-sm" style={{ background: 'var(--gradient-3)' }}>
-                    {mu.avatar_initials}
-                  </div>
-                  <div>
-                    <p className="font-semibold text-[var(--text-primary)] text-sm mb-0.5">{mu.full_name}</p>
-                    <p className="text-xs" style={{ color: 'var(--text-muted)' }}>{mu.email}</p>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+        <AssignMotionPicModal
+          motionTaskId={showAssign}
+          currentTask={motionTasks.find(t => t.id === showAssign)}
+          motionUsers={motionUsers}
+          userId={user.id}
+          onClose={() => { setShowAssign(null); refresh(); }}
+        />
       )}
 
       {/* Motion Detail Modal */}
@@ -454,6 +446,12 @@ export default function MotionPage() {
                   <p className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">Client / Brand</p>
                   <p className="text-sm font-medium text-[var(--text-primary)]">
                     {showDetail.parentTask?.client_name || allClients.find(c => c.id === showDetail.client_id)?.name || 'Unknown'}
+                  </p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">Requester</p>
+                  <p className="text-sm font-medium text-[var(--text-primary)]">
+                    {showDetail.parentTask?.created_by_name || 'Requester'}
                   </p>
                 </div>
                 <div className="space-y-1">
@@ -505,7 +503,7 @@ export default function MotionPage() {
                   <span className={`badge ${MOTION_STATUS_COLORS[showDetail.status_motion]}`}>{MOTION_STATUS_LABELS[showDetail.status_motion]}</span>
                 </div>
                 <div className="space-y-1">
-                  <p className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">Difficulty</p>
+                  <p className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-wider">Difficulty / Level</p>
                   <span className="badge text-[10px] py-0.5 px-2 bg-purple-500/20 text-purple-300 border-purple-500/30">
                     {MOTION_DIFFICULTY_LABELS[showDetail.motion_difficulty]}
                   </span>
@@ -523,7 +521,7 @@ export default function MotionPage() {
                   {showDetail.parentTask ? 'Final Asset Handoff (Design)' : 'Asset Request Link'}
                 </p>
                 {showDetail.parentTask?.final_asset_link || (!showDetail.parentTask && showDetail.link_motion) ? (
-                  <a href={showDetail.parentTask?.final_asset_link || showDetail.link_motion || '#'} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm hover:underline" style={{ color: 'var(--accent-blue)' }}>
+                  <a href={sanitizeUrl(showDetail.parentTask?.final_asset_link || showDetail.link_motion || '#')} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm hover:underline" style={{ color: 'var(--accent-blue)' }}>
                     <ExternalLink className="w-4 h-4" /> {showDetail.parentTask?.final_asset_name || 'Buka Link Asset'}
                   </a>
                 ) : (
@@ -534,13 +532,23 @@ export default function MotionPage() {
               {showDetail.link_motion && (
                 <div className="space-y-1 p-4 rounded-xl border border-pink-500/30 bg-pink-500/5">
                   <p className="text-xs font-semibold text-[var(--accent-pink)] uppercase tracking-wider mb-2">Output Motion Render</p>
-                  <a href={showDetail.link_motion} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm hover:underline font-medium text-[var(--text-primary)]">
+                  <a href={sanitizeUrl(showDetail.link_motion)} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm hover:underline font-medium text-[var(--text-primary)]">
                     <Film className="w-4 h-4 text-[var(--accent-pink)]" /> Buka Output Link
                   </a>
                 </div>
               )}
             </div>
-            <div className="p-4 flex justify-end" style={{ borderTop: '1px solid var(--border-primary)', background: 'var(--bg-secondary)' }}>
+            <div className="p-4 flex justify-end gap-2" style={{ borderTop: '1px solid var(--border-primary)', background: 'var(--bg-secondary)' }}>
+              {showDetail.status_motion === 'SUBMITTED' && ['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'REQUESTER'].includes(user.role_name) && (
+                <>
+                  <button onClick={async () => { await handleStatusChange(showDetail.id, 'REVISION'); setShowDetail(null); }} className="btn-secondary text-amber-400">
+                    <Undo2 className="w-4 h-4" /> Request Revision
+                  </button>
+                  <button onClick={async () => { await handleStatusChange(showDetail.id, 'APPROVED'); setShowDetail(null); }} className="btn-primary" style={{ background: 'var(--accent-emerald)' }}>
+                    <CheckCircle2 className="w-4 h-4" /> Approve Motion
+                  </button>
+                </>
+              )}
               <button onClick={() => setShowDetail(null)} className="btn-secondary">Tutup</button>
             </div>
           </div>
@@ -555,6 +563,66 @@ export default function MotionPage() {
 
       {/* HANDOVER MODAL */}
       {showHandoverModal && <HandoverModal taskId={showHandoverModal} onClose={() => { setShowHandoverModal(null); refresh(); }} userId={user.id} operators={allUsers.filter(u => u.role_name === 'OPERATOR')} />}
+    </div>
+  );
+}
+
+function AssignMotionPicModal({ 
+  motionTaskId, currentTask, motionUsers, userId, onClose 
+}: { 
+  motionTaskId: string; currentTask?: MotionTask; motionUsers: UserType[]; userId: string; onClose: () => void; 
+}) {
+  const [picId, setPicId] = useState(currentTask?.motion_pic_id || motionUsers[0]?.id || '');
+  const [difficulty, setDifficulty] = useState<MotionDifficulty>(currentTask?.motion_difficulty || 'LVL_1_SIMPLE');
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      await assignMotionPic(motionTaskId, picId, userId, difficulty);
+      onClose();
+    } catch (err: any) {
+      alert(err.message || 'Error assigning Motion PIC');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content max-w-md w-full" onClick={e => e.stopPropagation()}>
+        <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border-primary)', background: 'var(--bg-card)' }}>
+          <h2 className="text-lg font-bold text-[var(--text-primary)]">{currentTask?.motion_pic_id ? 'Edit / Reassign Motion PIC' : 'Assign Motion PIC'}</h2>
+          <button onClick={onClose} className="btn-ghost p-1.5 rounded-full hover:bg-[var(--bg-tertiary)]"><X className="w-5 h-5" /></button>
+        </div>
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          <div>
+            <label className="label">Motion PIC *</label>
+            <select required className="select" value={picId} onChange={e => setPicId(e.target.value)}>
+              {motionUsers.map(mu => (
+                <option key={mu.id} value={mu.id}>{mu.full_name} ({mu.daily_capacity_points} pts/day)</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Motion Level / Complexity *</label>
+            <select required className="select" value={difficulty} onChange={e => setDifficulty(e.target.value as MotionDifficulty)}>
+              <option value="LVL_1_SIMPLE">LVL 1 - Simple (2.0 pts)</option>
+              <option value="LVL_2_MEDIUM">LVL 2 - Medium (3.0 pts)</option>
+              <option value="LVL_3_ADVANCED">LVL 3 - Advanced (4.0 pts)</option>
+              <option value="LVL_4_PERIOD">LVL 4 - Period (5.0 pts)</option>
+            </select>
+            <p className="text-xs text-[var(--text-muted)] mt-1">Level menentukan bobot beban kerja (workload points) sesuai SOP RACI Motion.</p>
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+            <button type="submit" className="btn-primary" disabled={submitting}>
+              {submitting ? 'Saving...' : 'Confirm Assignment'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
@@ -603,6 +671,7 @@ function MotionFormModal({ onClose, userId, editTaskId, clients, motionUsers, mo
     platform: (taskToEdit?.platform as any) || 'TIKTOK',
     motion_type: taskToEdit?.motion_type || '',
     campaign_type: taskToEdit?.campaign_type || 'BaU',
+    motion_difficulty: (taskToEdit?.motion_difficulty as MotionDifficulty) || 'LVL_1_SIMPLE',
     motion_pic_id: taskToEdit?.motion_pic_id || '',
     production_date: taskToEdit?.production_date || '',
     period_start: taskToEdit?.period_start || '',
@@ -673,6 +742,16 @@ function MotionFormModal({ onClose, userId, editTaskId, clients, motionUsers, mo
                 <option value="PayDay" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">PayDay</option>
                 <option value="DD" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">Double Date (DD)</option>
                 <option value="Special" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">Special</option>
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="label">Motion Level / Complexity <span className="text-red-500">*</span></label>
+              <select required className="select" value={formData.motion_difficulty} onChange={e => setFormData({...formData, motion_difficulty: e.target.value as MotionDifficulty})}>
+                <option value="LVL_1_SIMPLE">LVL 1 - Simple (2.0 pts)</option>
+                <option value="LVL_2_MEDIUM">LVL 2 - Medium (3.0 pts)</option>
+                <option value="LVL_3_ADVANCED">LVL 3 - Advanced (4.0 pts)</option>
+                <option value="LVL_4_PERIOD">LVL 4 - Period (5.0 pts)</option>
               </select>
             </div>
             

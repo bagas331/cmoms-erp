@@ -30,7 +30,7 @@ export type DesignStatus =
   | 'DESIGN_APPROVED'
   | 'TASK_CLOSED';
 
-export type StratStatus = 'NOT_REQUIRED' | 'PENDING' | 'IN_PROGRESS' | 'REVIEW' | 'APPROVED';
+export type StratStatus = 'NOT_REQUIRED' | 'PENDING' | 'IN_PROGRESS' | 'REVIEW' | 'REVISION' | 'APPROVED';
 
 export type MotionReadiness = 'WAITING_ASSET_GD' | 'READY_TO_ANIMATE' | 'RENDERING';
 
@@ -115,6 +115,9 @@ export interface CreativeTask {
   strat_pic_id: string | null;
   status_strat: StratStatus;
   strat_revision_count: number;
+  strat_concept_name?: string | null;
+  strat_concept_link?: string | null;
+  strat_submitted_at?: string | null;
   design_pic_id: string | null;
   design_difficulty: DesignDifficulty | null;
   design_revision_count: number;
@@ -299,8 +302,16 @@ export interface SubmitTaskInput {
   final_asset_link: string;
 }
 
+export interface SubmitStrategicInput {
+  strat_concept_name?: string;
+  strat_concept_link?: string;
+  strat_link?: string;
+  notes?: string;
+}
+
 export interface RevisionInput {
   stage: RevisionStage;
   reason_category: ReasonCategory;
   notes: string;
 }
+

@@ -66,6 +66,7 @@ export const STRAT_STATUS_LABELS: Record<StratStatus, string> = {
   PENDING: 'Pending',
   IN_PROGRESS: 'In Progress',
   REVIEW: 'Review',
+  REVISION: 'Revision',
   APPROVED: 'Approved',
 };
 

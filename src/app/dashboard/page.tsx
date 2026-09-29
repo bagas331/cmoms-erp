@@ -1,17 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 
 import { useAuth } from '@/lib/auth';
 import { getDashboardStats, getAllTasksWithRelations, getDesignerWorkloads, getTasks } from '@/lib/supabase-store';
 import { DESIGN_STATUS_COLORS, DESIGN_STATUS_LABELS, EXCELLENCE_COLORS, EXCELLENCE_LABELS, DIFFICULTY_COLORS, DIFFICULTY_LABELS } from '@/lib/constants';
-import { formatDisplayDate, cn } from '@/lib/utils';
+import { formatDisplayDate, getMonthName, cn } from '@/lib/utils';
 import { DashboardStats, TaskWithRelations, DesignerWorkload, OperationalExcellence } from '@/lib/types';
 import Link from 'next/link';
 import {
   ClipboardList, AlertTriangle, CheckCircle2, Clock, Film,
   TrendingUp, Users, Zap, ArrowRight, BarChart3, Target,
-  AlertCircle, Activity, ChevronRight
+  AlertCircle, Activity, ChevronRight, Calendar, Filter
 } from 'lucide-react';
 
 export default function DashboardPage() {
@@ -20,32 +20,62 @@ export default function DashboardPage() {
   const [workloads, setWorkloads] = useState<DesignerWorkload[]>([]);
   const [recentTasks, setRecentTasks] = useState<TaskWithRelations[]>([]);
   const [slaBreakdown, setSlaBreakdown] = useState<Record<OperationalExcellence, number>>({ EXCELLENCE: 0, GOOD: 0, BAD: 0 });
+  const [allTasksRaw, setAllTasksRaw] = useState<TaskWithRelations[]>([]);
+
+  const [filterMonth, setFilterMonth] = useState<string>(() => String(new Date().getMonth() + 1).padStart(2, '0'));
+  const [filterYear, setFilterYear] = useState<string>(() => String(new Date().getFullYear()));
+
+  const loadData = useCallback(async () => {
+    try {
+      const [s, w, allTasks, tasks] = await Promise.all([
+        getDashboardStats({ filterMonth, filterYear }),
+        getDesignerWorkloads(filterMonth, filterYear),
+        getAllTasksWithRelations(),
+        getTasks()
+      ]);
+      setStats(s);
+      setWorkloads(w);
+      setAllTasksRaw(allTasks);
+
+      // Filter tasks by period for recent tasks and SLA breakdown
+      const periodTasks = allTasks.filter(t => {
+        const dStr = t.req_date || t.created_at || '';
+        if (!dStr) return true;
+        const y = dStr.substring(0, 4);
+        const m = dStr.substring(5, 7);
+        if (filterYear !== 'all' && y !== filterYear) return false;
+        if (filterMonth !== 'all' && m !== filterMonth) return false;
+        return true;
+      });
+
+      setRecentTasks(periodTasks.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()).slice(0, 8));
+
+      const withExcellence = periodTasks.filter(t => t.operational_excellence);
+      const breakdown: Record<OperationalExcellence, number> = { EXCELLENCE: 0, GOOD: 0, BAD: 0 };
+      withExcellence.forEach(t => {
+        if (t.operational_excellence) breakdown[t.operational_excellence]++;
+      });
+      setSlaBreakdown(breakdown);
+    } catch (err) {
+      console.error('Failed to load dashboard data:', err);
+    }
+  }, [filterMonth, filterYear]);
 
   useEffect(() => {
-    async function loadData() {
-      try {
-        const [s, w, allTasks, tasks] = await Promise.all([
-          getDashboardStats(),
-          getDesignerWorkloads(),
-          getAllTasksWithRelations(),
-          getTasks()
-        ]);
-        setStats(s);
-        setWorkloads(w);
-        setRecentTasks(allTasks.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()).slice(0, 8));
-
-        const withExcellence = tasks.filter(t => t.operational_excellence);
-        const breakdown: Record<OperationalExcellence, number> = { EXCELLENCE: 0, GOOD: 0, BAD: 0 };
-        withExcellence.forEach(t => {
-          if (t.operational_excellence) breakdown[t.operational_excellence]++;
-        });
-        setSlaBreakdown(breakdown);
-      } catch (err) {
-        console.error('Failed to load dashboard data:', err);
-      }
-    }
     loadData();
-  }, []);
+  }, [loadData]);
+
+  const availableYears = Array.from(new Set([
+    ...allTasksRaw.map(t => (t.req_date || t.created_at || '').substring(0, 4)).filter(Boolean),
+    String(new Date().getFullYear())
+  ])).sort().reverse();
+
+  const getPeriodLabel = () => {
+    if (filterMonth === 'all' && filterYear === 'all') return 'All Time';
+    if (filterMonth === 'all') return `Year ${filterYear}`;
+    if (filterYear === 'all') return `${getMonthName(Number(filterMonth))} (All Years)`;
+    return `${getMonthName(Number(filterMonth))} ${filterYear}`;
+  };
 
   if (!user) return null;
   if (!stats) {
@@ -65,7 +95,7 @@ export default function DashboardPage() {
     { label: 'In Progress', value: stats.in_progress_tasks, icon: Activity, gradient: 'var(--gradient-2)', color: 'var(--accent-cyan)' },
     { label: 'Completed', value: stats.completed_tasks, icon: CheckCircle2, gradient: 'var(--gradient-4)', color: 'var(--accent-emerald)' },
     { label: 'Motion Queue', value: stats.motion_queue, icon: Film, gradient: 'linear-gradient(135deg, #ec4899, #8b5cf6)', color: 'var(--accent-pink)' },
-    { label: 'This Month', value: stats.total_tasks_this_month, icon: Target, gradient: 'linear-gradient(135deg, #f59e0b, #f97316)', color: 'var(--accent-amber)' },
+    { label: 'This Period', value: stats.total_tasks_this_month, icon: Target, gradient: 'linear-gradient(135deg, #f59e0b, #f97316)', color: 'var(--accent-amber)' },
   ];
 
   const totalSla = slaBreakdown.EXCELLENCE + slaBreakdown.GOOD + slaBreakdown.BAD;
@@ -74,16 +104,51 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* Welcome Banner */}
-      <div className="card-static p-6 relative overflow-hidden">
-        <div className="absolute inset-0 opacity-5 absolute inset-0 opacity-5 bg-[var(--gradient-1)]" />
+      {/* Welcome & Filter Bar Banner */}
+      <div className="card-static p-6 relative overflow-hidden flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="absolute inset-0 opacity-5 bg-[var(--gradient-1)] pointer-events-none" />
         <div className="relative z-10">
           <h1 className="text-2xl font-bold text-[var(--text-primary)] mb-1">
             Selamat datang, {user.full_name}
           </h1>
           <p className="text-[var(--text-secondary)] text-sm">
-            Berikut ringkasan operasional tim kreatif hari ini — {new Date().toLocaleDateString('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+            Berikut ringkasan operasional tim kreatif • Data Cutoff: <strong className="text-[var(--text-primary)]">{getPeriodLabel()}</strong>
           </p>
+        </div>
+
+        {/* Dashboard Date Filter */}
+        <div className="relative z-10 flex flex-wrap items-center gap-3 bg-[var(--bg-secondary)] p-2 rounded-xl border border-[var(--border-primary)] shadow-sm">
+          <div className="flex items-center gap-2 px-2 py-1 bg-[var(--bg-tertiary)] rounded-lg border border-[var(--border-secondary)]">
+            <Calendar className="w-4 h-4 text-[var(--accent-blue)]" />
+            
+            <select 
+              className="select border-none bg-transparent py-1 text-sm focus:ring-0 min-w-[120px] cursor-pointer" 
+              value={filterMonth} 
+              onChange={(e) => setFilterMonth(e.target.value)}
+            >
+              <option value="all">All Months</option>
+              {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                <option key={m} value={String(m).padStart(2, '0')}>{getMonthName(m)}</option>
+              ))}
+            </select>
+
+            <div className="w-px h-4 bg-[var(--border-primary)]"></div>
+
+            <select 
+              className="select border-none bg-transparent py-1 text-sm focus:ring-0 min-w-[100px] cursor-pointer" 
+              value={filterYear} 
+              onChange={(e) => setFilterYear(e.target.value)}
+            >
+              <option value="all">All Years</option>
+              {availableYears.map(y => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </div>
+
+          <span className="badge text-xs px-2.5 py-1 bg-blue-500/10 text-blue-400 border-blue-500/30">
+            Period: {getPeriodLabel()}
+          </span>
         </div>
       </div>
 

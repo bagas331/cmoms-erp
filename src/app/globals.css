@@ -124,7 +124,6 @@ body {
   transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
   box-shadow: var(--shadow-card);
   position: relative;
-  overflow: hidden;
 }
 
 .dark .card, .dark .card-static {
@@ -745,59 +744,159 @@ body {
   background: var(--text-muted);
 }
 
-/* rebuild */
+/* Essential Fallback Utilities & Spacing Protection */
+.p-0 { padding: 0 !important; }
+.p-0\.5 { padding: 0.125rem !important; }
+.p-1 { padding: 0.25rem !important; }
+.p-1\.5 { padding: 0.375rem !important; }
+.p-2 { padding: 0.5rem !important; }
+.p-2\.5 { padding: 0.625rem !important; }
+.p-3 { padding: 0.75rem !important; }
+.p-3\.5 { padding: 0.875rem !important; }
+.p-4 { padding: 1rem !important; }
+.p-5 { padding: 1.25rem !important; }
+.p-6 { padding: 1.5rem !important; }
+.p-7 { padding: 1.75rem !important; }
+.p-8 { padding: 2rem !important; }
+.p-10 { padding: 2.5rem !important; }
+.p-12 { padding: 3rem !important; }
 
-/* Essential Fallback Utilities in case Tailwind V4 misses them */
+.px-0 { padding-left: 0 !important; padding-right: 0 !important; }
+.px-1 { padding-left: 0.25rem !important; padding-right: 0.25rem !important; }
+.px-1\.5 { padding-left: 0.375rem !important; padding-right: 0.375rem !important; }
+.px-2 { padding-left: 0.5rem !important; padding-right: 0.5rem !important; }
+.px-2\.5 { padding-left: 0.625rem !important; padding-right: 0.625rem !important; }
+.px-3 { padding-left: 0.75rem !important; padding-right: 0.75rem !important; }
+.px-3\.5 { padding-left: 0.875rem !important; padding-right: 0.875rem !important; }
+.px-4 { padding-left: 1rem !important; padding-right: 1rem !important; }
+.px-5 { padding-left: 1.25rem !important; padding-right: 1.25rem !important; }
+.px-6 { padding-left: 1.5rem !important; padding-right: 1.5rem !important; }
+.px-8 { padding-left: 2rem !important; padding-right: 2rem !important; }
+
+.py-0 { padding-top: 0 !important; padding-bottom: 0 !important; }
+.py-0\.5 { padding-top: 0.125rem !important; padding-bottom: 0.125rem !important; }
+.py-1 { padding-top: 0.25rem !important; padding-bottom: 0.25rem !important; }
+.py-1\.5 { padding-top: 0.375rem !important; padding-bottom: 0.375rem !important; }
+.py-2 { padding-top: 0.5rem !important; padding-bottom: 0.5rem !important; }
+.py-2\.5 { padding-top: 0.625rem !important; padding-bottom: 0.625rem !important; }
+.py-3 { padding-top: 0.75rem !important; padding-bottom: 0.75rem !important; }
+.py-3\.5 { padding-top: 0.875rem !important; padding-bottom: 0.875rem !important; }
+.py-4 { padding-top: 1rem !important; padding-bottom: 1rem !important; }
+.py-5 { padding-top: 1.25rem !important; padding-bottom: 1.25rem !important; }
+.py-6 { padding-top: 1.5rem !important; padding-bottom: 1.5rem !important; }
+.py-8 { padding-top: 2rem !important; padding-bottom: 2rem !important; }
+
+.pt-0 { padding-top: 0 !important; }
+.pt-1 { padding-top: 0.25rem !important; }
+.pt-1\.5 { padding-top: 0.375rem !important; }
+.pt-2 { padding-top: 0.5rem !important; }
+.pt-2\.5 { padding-top: 0.625rem !important; }
+.pt-3 { padding-top: 0.75rem !important; }
+.pt-4 { padding-top: 1rem !important; }
+.pt-5 { padding-top: 1.25rem !important; }
+.pt-6 { padding-top: 1.5rem !important; }
+
+.pb-0 { padding-bottom: 0 !important; }
+.pb-0\.5 { padding-bottom: 0.125rem !important; }
+.pb-1 { padding-bottom: 0.25rem !important; }
+.pb-1\.5 { padding-bottom: 0.375rem !important; }
+.pb-2 { padding-bottom: 0.5rem !important; }
+.pb-2\.5 { padding-bottom: 0.625rem !important; }
+.pb-3 { padding-bottom: 0.75rem !important; }
+.pb-4 { padding-bottom: 1rem !important; }
+.pb-5 { padding-bottom: 1.25rem !important; }
+.pb-6 { padding-bottom: 1.5rem !important; }
+
+.pl-2 { padding-left: 0.5rem !important; }
+.pl-3 { padding-left: 0.75rem !important; }
+.pl-4 { padding-left: 1rem !important; }
+.pl-6 { padding-left: 1.5rem !important; }
+.pl-10 { padding-left: 2.5rem !important; }
+.pr-2 { padding-right: 0.5rem !important; }
+.pr-3 { padding-right: 0.75rem !important; }
+.pr-4 { padding-right: 1rem !important; }
+.pr-6 { padding-right: 1.5rem !important; }
+.pr-10 { padding-right: 2.5rem !important; }
+
 .gap-1 { gap: 0.25rem !important; }
 .gap-1\.5 { gap: 0.375rem !important; }
 .gap-2 { gap: 0.5rem !important; }
+.gap-2\.5 { gap: 0.625rem !important; }
 .gap-3 { gap: 0.75rem !important; }
+.gap-3\.5 { gap: 0.875rem !important; }
 .gap-4 { gap: 1rem !important; }
 .gap-5 { gap: 1.25rem !important; }
 .gap-6 { gap: 1.5rem !important; }
+.gap-8 { gap: 2rem !important; }
 
 .space-y-1 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.25rem !important; }
+.space-y-1\.5 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.375rem !important; }
 .space-y-2 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.5rem !important; }
+.space-y-2\.5 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.625rem !important; }
 .space-y-3 > :not([hidden]) ~ :not([hidden]) { margin-top: 0.75rem !important; }
 .space-y-4 > :not([hidden]) ~ :not([hidden]) { margin-top: 1rem !important; }
+.space-y-5 > :not([hidden]) ~ :not([hidden]) { margin-top: 1.25rem !important; }
 .space-y-6 > :not([hidden]) ~ :not([hidden]) { margin-top: 1.5rem !important; }
+.space-y-8 > :not([hidden]) ~ :not([hidden]) { margin-top: 2rem !important; }
 
+.space-x-1 > :not([hidden]) ~ :not([hidden]) { margin-left: 0.25rem !important; }
 .space-x-2 > :not([hidden]) ~ :not([hidden]) { margin-left: 0.5rem !important; }
+.space-x-3 > :not([hidden]) ~ :not([hidden]) { margin-left: 0.75rem !important; }
 .space-x-4 > :not([hidden]) ~ :not([hidden]) { margin-left: 1rem !important; }
+.space-x-6 > :not([hidden]) ~ :not([hidden]) { margin-left: 1.5rem !important; }
 
+.mb-0 { margin-bottom: 0 !important; }
 .mb-1 { margin-bottom: 0.25rem !important; }
 .mb-1\.5 { margin-bottom: 0.375rem !important; }
 .mb-2 { margin-bottom: 0.5rem !important; }
+.mb-2\.5 { margin-bottom: 0.625rem !important; }
 .mb-3 { margin-bottom: 0.75rem !important; }
 .mb-4 { margin-bottom: 1rem !important; }
+.mb-5 { margin-bottom: 1.25rem !important; }
 .mb-6 { margin-bottom: 1.5rem !important; }
+.mb-8 { margin-bottom: 2rem !important; }
 
+.mt-0 { margin-top: 0 !important; }
 .mt-1 { margin-top: 0.25rem !important; }
+.mt-1\.5 { margin-top: 0.375rem !important; }
 .mt-2 { margin-top: 0.5rem !important; }
+.mt-2\.5 { margin-top: 0.625rem !important; }
 .mt-3 { margin-top: 0.75rem !important; }
 .mt-4 { margin-top: 1rem !important; }
+.mt-5 { margin-top: 1.25rem !important; }
 .mt-6 { margin-top: 1.5rem !important; }
+.mt-8 { margin-top: 2rem !important; }
 
-.p-2 { padding: 0.5rem !important; }
-.p-3 { padding: 0.75rem !important; }
-.p-4 { padding: 1rem !important; }
-.p-6 { padding: 1.5rem !important; }
-
-.pl-10 { padding-left: 2.5rem !important; }
-.pr-10 { padding-right: 2.5rem !important; }
+.leading-none { line-height: 1 !important; }
+.leading-tight { line-height: 1.25 !important; }
+.leading-snug { line-height: 1.375 !important; }
+.leading-normal { line-height: 1.5 !important; }
+.leading-relaxed { line-height: 1.625 !important; }
 
 .grid-cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)) !important; }
 .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
 .grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+.grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
+.grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)) !important; }
 .grid-cols-6 { grid-template-columns: repeat(6, minmax(0, 1fr)) !important; }
+
+@media (min-width: 640px) {
+  .sm\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .sm\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+  .sm\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
+}
 
 @media (min-width: 768px) {
   .md\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
   .md\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+  .md\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
+  .md\:grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)) !important; }
 }
 
 @media (min-width: 1024px) {
   .lg\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
   .lg\:grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+  .lg\:grid-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; }
+  .lg\:grid-cols-5 { grid-template-columns: repeat(5, minmax(0, 1fr)) !important; }
   .lg\:grid-cols-6 { grid-template-columns: repeat(6, minmax(0, 1fr)) !important; }
 }
