@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
-import { Layers, Eye, EyeOff, LogIn, Zap, Shield, BarChart3, Users } from 'lucide-react';
+import { Layers, Eye, EyeOff, LogIn, Zap, Shield, BarChart3, Users, AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
 
 const QUICK_LOGIN = [
@@ -200,6 +200,16 @@ export default function LoginPage() {
 
           {/* Quick Login */}
           <div>
+            <div className="flex flex-col gap-1.5 mb-4 p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4" />
+                <span className="text-xs font-bold uppercase tracking-wider">Demo Version Disclaimer</span>
+              </div>
+              <p className="text-[11px] leading-relaxed">
+                Karena aplikasi masih dalam tahap purwarupa (demo), Anda dapat menggunakan tombol <strong>Quick Login</strong> di bawah ini untuk masuk dan mencoba berbagai peran (roles) tanpa memasukkan password. Fitur ini akan dinonaktifkan saat aplikasi rilis ke production.
+              </p>
+            </div>
+
             <p className="text-xs font-medium mb-3 text-[var(--text-muted)]">
               QUICK LOGIN (DEMO)
             </p>
