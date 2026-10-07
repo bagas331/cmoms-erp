@@ -1,11 +1,16 @@
 export function downloadCSV(data: Record<string, unknown>[], filename: string) {
-  if (data.length === 0) return;
+  if (!data || data.length === 0) {
+    if (typeof window !== 'undefined') {
+      alert('Tidak ada data untuk diekspor.');
+    }
+    return;
+  }
 
   const headers = Object.keys(data[0]);
-  const csvRows = [];
+  const csvRows: string[] = [];
 
-  // Add headers
-  csvRows.push(headers.join(','));
+  // Add escaped headers
+  csvRows.push(headers.map(h => `"${h.replace(/"/g, '""')}"`).join(','));
 
   // Add rows with CSV Injection (Formula Injection) mitigation
   for (const row of data) {
@@ -24,7 +29,8 @@ export function downloadCSV(data: Record<string, unknown>[], filename: string) {
     csvRows.push(values.join(','));
   }
 
-  const csvString = csvRows.join('\n');
+  // Use \r\n for universal spreadsheet compatibility and \uFEFF BOM for UTF-8 Excel support
+  const csvString = '\uFEFF' + csvRows.join('\r\n');
   const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
   
   const link = document.createElement('a');
@@ -36,5 +42,7 @@ export function downloadCSV(data: Record<string, unknown>[], filename: string) {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   }
 }
+

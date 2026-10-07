@@ -32,11 +32,16 @@ export function formatDate(date: Date): string {
 }
 
 /**
- * Parse a YYYY-MM-DD string into a Date object (local timezone)
+ * Parse a YYYY-MM-DD or ISO date string into a Date object (local timezone)
  */
 export function parseDate(dateStr: string): Date {
-  const [y, m, d] = dateStr.split('-').map(Number);
-  return new Date(y, m - 1, d);
+  if (!dateStr) return new Date(NaN);
+  const cleanStr = dateStr.includes('T') ? dateStr.split('T')[0] : dateStr;
+  const parts = cleanStr.split('-').map(Number);
+  if (parts.length >= 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
+    return new Date(parts[0], parts[1] - 1, parts[2]);
+  }
+  return new Date(dateStr);
 }
 
 /**

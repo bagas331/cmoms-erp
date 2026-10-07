@@ -57,7 +57,7 @@ function RegisterForm() {
               <img src="/logo.png" alt="Logo" className="w-full h-full object-contain" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-[var(--text-primary)] leading-none">Monitoring</h1>
+              <h1 className="text-2xl font-bold text-[var(--text-primary)] leading-none">ORBIZ</h1>
               <p className="text-xs text-[var(--text-muted)] mt-1">Desain Internal & External</p>
             </div>
           </div>
@@ -80,7 +80,7 @@ function RegisterForm() {
               <img src="/logo.png" alt="Logo" className="w-full h-full object-contain" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-[var(--text-primary)] leading-none">Monitoring</h1>
+              <h1 className="text-xl font-bold text-[var(--text-primary)] leading-none">ORBIZ & ORCA</h1>
               <p className="text-[10px] text-[var(--text-muted)] mt-1">Desain Internal & External</p>
             </div>
           </div>

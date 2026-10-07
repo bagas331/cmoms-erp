@@ -56,7 +56,7 @@ export default function CapacityPage() {
   // Global Filter State
   const [filter, setFilter] = useState<GlobalAnalyticsFilter>({
     month: 'all',
-    year: String(new Date().getFullYear()),
+    year: 'all',
     clientId: 'all',
     picId: 'all',
     taskSource: 'all',
@@ -123,7 +123,7 @@ export default function CapacityPage() {
   const handleResetFilter = () => {
     const reset = {
       month: 'all',
-      year: String(new Date().getFullYear()),
+      year: 'all',
       clientId: 'all',
       picId: 'all',
       taskSource: 'all',

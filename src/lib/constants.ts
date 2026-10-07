@@ -125,14 +125,24 @@ export const ROLE_LABELS: Record<RoleName, string> = {
   OPERATOR: 'Operator',
 };
 
+export const ROLE_DESCRIPTIONS: Record<RoleName, string> = {
+  ADMIN: 'System Administrator: Akses penuh ke seluruh konfigurasi sistem, data master, manajemen user & audit.',
+  TEAM_LEAD: 'Creative Director / Team Lead: Triage brief, assign tugas, review & approval, serta manajemen tim.',
+  STRATEGIC_PIC: 'Strategic Planner: Formulasi konsep strategis, review brief, dan perencanaan kampanye kreatif.',
+  DESIGNER: 'Graphic Designer: Produksi aset grafis statis dan pengajuan deliverable visual desain.',
+  MOTION_PIC: 'Motion Designer: Produksi animasi grafis 2D/3D, video motion, dan rendering output.',
+  REQUESTER: 'Requester / Account Executive: Pembuatan request brief kreatif, peninjauan hasil & request revisi.',
+  OPERATOR: 'Live Stream Operator: Penyiapan aset broadcast & streaming, serta operasional serah terima.',
+};
+
 export const ROLE_COLORS: Record<RoleName, string> = {
-  ADMIN: 'bg-red-500/20 text-red-300 border-red-500/30',
-  TEAM_LEAD: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
-  STRATEGIC_PIC: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30',
-  DESIGNER: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/30',
-  MOTION_PIC: 'bg-pink-500/20 text-pink-300 border-pink-500/30',
-  REQUESTER: 'bg-teal-500/20 text-teal-300 border-teal-500/30',
-  OPERATOR: 'bg-gray-500/20 text-gray-300 border-gray-500/30',
+  ADMIN: 'bg-red-500/20 text-red-400 border-red-500/30',
+  TEAM_LEAD: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  STRATEGIC_PIC: 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30',
+  DESIGNER: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
+  MOTION_PIC: 'bg-pink-500/20 text-pink-400 border-pink-500/30',
+  REQUESTER: 'bg-teal-500/20 text-teal-400 border-teal-500/30',
+  OPERATOR: 'bg-slate-500/20 text-slate-400 border-slate-500/30',
 };
 
 // --- KANBAN COLUMNS ---

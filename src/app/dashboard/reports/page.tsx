@@ -15,7 +15,7 @@ export default function ReportsPage() {
   const [users, setUsers] = useState<User[]>([]);
   
   const [filterMonth, setFilterMonth] = useState<string>('all');
-  const [filterYear, setFilterYear] = useState<string>(() => String(new Date().getFullYear()));
+  const [filterYear, setFilterYear] = useState<string>('all');
   const [activeTab, setActiveTab] = useState<'GRAPHIC' | 'MOTION'>('GRAPHIC');
 
   useEffect(() => { 

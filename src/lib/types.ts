@@ -92,6 +92,7 @@ export interface ContentType {
 }
 
 export interface Holiday {
+  id?: number | string;
   holiday_date: string; // YYYY-MM-DD
   description: string;
 }
@@ -113,6 +114,7 @@ export interface CreativeTask {
   operational_excellence: OperationalExcellence | null;
   requires_strategic_concept: boolean;
   strat_pic_id: string | null;
+  strat_pic_ids?: string[] | null;
   status_strat: StratStatus;
   strat_revision_count: number;
   strat_concept_name?: string | null;
@@ -126,6 +128,8 @@ export interface CreativeTask {
   final_asset_name: string | null;
   final_asset_link: string | null;
   operator_id: string | null;
+  approved_at?: string | null;
+  priority?: 'HIGH' | 'MEDIUM' | 'LOW' | string | null;
   notes: string;
   created_by: string;
   created_at: string;
@@ -153,6 +157,7 @@ export interface MotionTask {
   status_motion: MotionStatus;
   apply_date: string | null;
   link_motion: string | null;
+  approved_at?: string | null;
   notes: string;
   created_at: string;
   updated_at: string;
@@ -162,10 +167,24 @@ export interface MotionTask {
 export interface TaskComment {
   id: string;
   task_id: string;
+  request_id?: string;
   user_id: string;
+  sender_id?: string;
   user_name: string;
+  sender_name?: string;
   user_avatar: string;
+  user_role?: RoleName;
   content: string;
+  message?: string;
+  attachment_url?: string | null;
+  attachment_type?: 'image' | 'video' | 'file' | null;
+  attachment_name?: string | null;
+  is_edited?: boolean;
+  edited_at?: string | null;
+  is_deleted?: boolean;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  read_by?: string[];
   created_at: string;
 }
 
@@ -192,14 +211,43 @@ export interface AuditLog {
   timestamp: string;
 }
 
+export type NotificationType =
+  | 'NEW_MESSAGE'
+  | 'REQUEST_STATUS_UPDATED'
+  | 'REQUEST_ASSIGNED'
+  | 'REQUEST_REASSIGNED'
+  | 'REQUEST_SUBMITTED'
+  | 'REQUEST_REVISION'
+  | 'REQUEST_APPROVED'
+  | 'REQUEST_CLOSED'
+  | 'MOTION_STATUS_UPDATED'
+  | 'MOTION_ASSIGNED'
+  | 'MOTION_SUBMITTED'
+  | 'MOTION_REVISION'
+  | 'MOTION_APPROVED'
+  | 'MOTION_COMPLETED'
+  | 'SYSTEM_ALERT';
+
 export interface Notification {
   id: string;
   user_id: string;
+  recipient_user_id?: string;
   title: string;
   message: string;
   type: 'info' | 'warning' | 'success' | 'error';
+  notification_type?: NotificationType | string;
   read: boolean;
+  is_read?: boolean;
+  read_at?: string | null;
   link?: string;
+  request_id?: string;
+  task_id?: string;
+  sender_id?: string;
+  actor_user_id?: string;
+  sender_name?: string;
+  old_status?: string | null;
+  new_status?: string | null;
+  metadata?: Record<string, any> | null;
   created_at: string;
 }
 
@@ -211,6 +259,8 @@ export interface TaskWithRelations extends CreativeTask {
   content_type_name: string;
   design_pic_name: string | null;
   strat_pic_name: string | null;
+  strat_pic_names?: string[] | null;
+  strat_pic_ids?: string[] | null;
   created_by_name: string;
   motion_task?: MotionTask | null;
   motion_pic_name?: string | null;
@@ -287,6 +337,7 @@ export interface CreateTaskInput {
   due_date: string;
   requires_strategic_concept: boolean;
   strat_pic_id?: string;
+  strat_pic_ids?: string[];
   notes: string;
 }
 
@@ -294,6 +345,7 @@ export interface AssignTaskInput {
   design_pic_id?: string;
   design_difficulty?: DesignDifficulty;
   strat_pic_id?: string;
+  strat_pic_ids?: string[];
 }
 
 export interface SubmitTaskInput {

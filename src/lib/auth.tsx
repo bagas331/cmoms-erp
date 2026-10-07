@@ -11,6 +11,7 @@ interface AuthContextType {
   user: User | null;
   login: (email: string, password: string) => Promise<boolean>;
   logout: () => void;
+  updateCurrentUser: (updatedUser: User) => void;
   isAuthenticated: boolean;
   isLoading: boolean;
 }
@@ -19,6 +20,7 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   login: async () => false,
   logout: () => {},
+  updateCurrentUser: () => {},
   isAuthenticated: false,
   isLoading: true,
 });
@@ -69,8 +71,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     localStorage.removeItem('cmoms_current_user');
   }, []);
 
+  const updateCurrentUser = useCallback((updatedUser: User) => {
+    setUser(updatedUser);
+    try {
+      localStorage.setItem('cmoms_current_user', JSON.stringify(updatedUser));
+    } catch (err) {
+      console.error("Failed to update stored user:", err);
+    }
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAuthenticated: !!user, isLoading }}>
+    <AuthContext.Provider value={{ user, login, logout, updateCurrentUser, isAuthenticated: !!user, isLoading }}>
       {children}
     </AuthContext.Provider>
   );
@@ -87,11 +98,12 @@ export function hasPermission(
 ): boolean {
   const permissions: Record<string, string[]> = {
     ADMIN: ['*'],
-    TEAM_LEAD: ['view_all', 'create_task', 'assign_task', 'approve', 'revision', 'view_reports', 'view_audit', 'manage_master'],
+    TEAM_LEAD: ['view_all', 'create_task', 'assign_task', 'approve', 'revision', 'view_reports', 'manage_master', 'manage_users'],
     STRATEGIC_PIC: ['view_all', 'create_task', 'edit_brief', 'view_capacity'],
     DESIGNER: ['view_own', 'update_status', 'submit_task', 'view_own_capacity'],
     MOTION_PIC: ['view_own', 'update_motion', 'view_own_capacity'],
     REQUESTER: ['create_task', 'view_own', 'request_revision'],
+    OPERATOR: ['view_all', 'update_motion'],
   };
 
   const rolePerms = permissions[roleName] || [];
