@@ -1,5 +1,5 @@
 // ============================================================
-// CMOMS - SLA & Operational Excellence Engine
+// CMOS - SLA & Operational Excellence Engine
 // Automated Business Day Calculator
 // ============================================================
 

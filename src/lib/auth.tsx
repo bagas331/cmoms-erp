@@ -1,6 +1,6 @@
 'use client';
 // ============================================================
-// CMOMS - Authentication Context
+// CMOS - Authentication Context
 // ============================================================
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';

@@ -23,10 +23,10 @@ export default function Home() {
         <div className="relative w-32 h-20 mb-6">
           <div className="absolute inset-0 rounded-2xl bg-[var(--accent-blue)]/10 blur-xl animate-pulse" />
           <div className="relative w-full h-full flex items-center justify-center">
-            <img src="/logo.png" alt="CMOMS Logo" className="w-full h-full object-contain drop-shadow-xl" />
+            <img src="/logo.png" alt="CMOS Logo" className="w-full h-full object-contain drop-shadow-xl" />
           </div>
         </div>
-        <h1 className="text-2xl font-bold text-[var(--text-primary)] mb-2 tracking-tight">CMOMS</h1>
+        <h1 className="text-2xl font-bold text-[var(--text-primary)] mb-2 tracking-tight">CMOS</h1>
         <p className="text-sm text-[var(--text-secondary)] mb-8">Memuat ruang kerja kreatif Anda...</p>
         
         <div className="flex gap-2">

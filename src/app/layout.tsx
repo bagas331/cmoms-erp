@@ -4,7 +4,7 @@ import { AuthProvider } from "@/lib/auth";
 import { ThemeProvider } from "@/components/theme-provider";
 
 export const metadata: Metadata = {
-  title: "CMOMS - Creative & Motion Operations Management System",
+  title: "CMOS - Creative & Motion Operations System",
   description: "Internal Creative Operations Management System untuk tim Creative Content, Graphic Design, Strategic Concept, dan Motion Graphics.",
   icons: {
     icon: "/logo.png",

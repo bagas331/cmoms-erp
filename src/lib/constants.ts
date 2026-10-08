@@ -1,5 +1,5 @@
 // ============================================================
-// CMOMS - Constants & Configuration
+// CMOS - Constants & Configuration
 // ============================================================
 
 import { DesignDifficulty, DesignStatus, MotionDifficulty, MotionStatus, OperationalExcellence, ReasonCategory, RoleName, StratStatus, TaskSource } from './types';

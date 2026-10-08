@@ -1,5 +1,5 @@
 // ============================================================
-// CMOMS - Seed Data (Realistic Demo Data)
+// CMOS - Seed Data (Realistic Demo Data)
 // ============================================================
 
 import { AuditLog, Client, ContentType, CreativeTask, Holiday, MotionTask, Notification, Role, TaskRevision, User } from './types';

@@ -5,12 +5,12 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth';
 import { getUsers } from '@/lib/supabase-store';
 import { SEED_USERS } from '@/lib/seed-data';
-import { ROLE_LABELS, ROLE_COLORS } from '@/lib/constants';
-import { User, RoleName } from '@/lib/types';
+import { ROLE_LABELS } from '@/lib/constants';
+import { RoleName } from '@/lib/types';
 import { getInitials } from '@/lib/utils';
 import {
-  Eye, EyeOff, LogIn, Zap, Shield, BarChart3, Users,
-  AlertTriangle, Search, CheckCircle2, UserCheck, Sparkles,
+  Eye, EyeOff, LogIn, Shield, Users,
+  AlertTriangle, Search, UserCheck,
   Palette, Video, Lightbulb, Crown, Radio
 } from 'lucide-react';
 import Link from 'next/link';
@@ -189,128 +189,62 @@ export default function LoginPage() {
   }, [allAccounts, selectedRoleTab, searchAccountQuery]);
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', background: 'var(--bg-primary)' }}>
-      {/* Left - Branding & Feature Overview */}
-      <div
-        className="hidden lg:flex"
-        style={{
-          width: '45%',
-          position: 'relative',
-          overflow: 'hidden',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '48px',
-          background: 'var(--bg-secondary)',
-          borderRight: '1px solid var(--border-primary)',
-        }}
-      >
-        <div style={{ maxWidth: '440px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '32px' }}>
-            <div
-              style={{
-                width: '42px',
-                height: '42px',
-                borderRadius: '10px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                overflow: 'hidden',
-                boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
-              }}
-            >
-              <img src="/logo.png" alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-            </div>
-            <div>
-              <h1 style={{ fontSize: '18px', fontWeight: '800', color: 'var(--text-primary)', lineHeight: 1.2, margin: 0 }}>
-                CMOMS ERP
-              </h1>
-              <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '2px 0 0' }}>
-                Creative &amp; Motion Operations System
-              </p>
-            </div>
-          </div>
-
-          <h2 style={{ fontSize: '30px', fontWeight: '800', color: 'var(--text-primary)', lineHeight: 1.2, marginBottom: '14px' }}>
-            Manage Your <span style={{ color: 'var(--accent-blue)' }}>Creative Pipeline</span> With SOP RACI
-          </h2>
-          <p style={{ fontSize: '13.5px', marginBottom: '28px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-            Sistem terpadu operasional tim kreatif yang menyelaraskan alur kerja <strong>AE</strong>, <strong>Strategic</strong>, <strong>GD</strong>, <strong>Motion</strong>, dan <strong>OP</strong> dengan standar SLA &amp; pelacakan kapasitas otomatis.
-          </p>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            {[
-              { icon: Zap, label: 'Automated SLA', desc: 'Auto-tracking 3-day SLA' },
-              { icon: Shield, label: 'SOP RACI Roles', desc: 'AE, Strat, GD, Motion & OP' },
-              { icon: BarChart3, label: 'Live Analytics', desc: 'Real-time pipeline metrics' },
-              { icon: Users, label: 'Capacity Engine', desc: 'Daily workload points scoring' },
-            ].map((f, i) => (
-              <div
-                key={i}
-                style={{
-                  padding: '14px',
-                  borderRadius: '10px',
-                  background: 'var(--bg-primary)',
-                  border: '1px solid var(--border-primary)',
-                }}
-              >
-                <f.icon style={{ width: '18px', height: '18px', marginBottom: '8px', color: 'var(--accent-blue)' }} />
-                <p style={{ fontWeight: '700', fontSize: '12px', color: 'var(--text-primary)', margin: 0 }}>{f.label}</p>
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '2px 0 0' }}>{f.desc}</p>
-              </div>
-            ))}
-          </div>
-
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '36px 20px',
+        background: 'var(--bg-primary)',
+      }}
+    >
+      <div style={{ width: '100%', maxWidth: '560px' }} className="animate-fade-in">
+        
+        {/* Brand Header */}
+        <div style={{ textAlign: 'center', marginBottom: '28px' }}>
           <div
             style={{
-              marginTop: '28px',
-              padding: '14px 16px',
-              borderRadius: '10px',
-              background: 'color-mix(in srgb, var(--accent-blue) 6%, transparent)',
-              border: '1px solid color-mix(in srgb, var(--accent-blue) 20%, transparent)',
-              display: 'flex',
+              width: '52px',
+              height: '52px',
+              borderRadius: '14px',
+              display: 'inline-flex',
               alignItems: 'center',
-              gap: '12px',
+              justifyContent: 'center',
+              overflow: 'hidden',
+              boxShadow: '0 6px 16px rgba(0,0,0,0.08)',
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border-primary)',
+              marginBottom: '12px',
             }}
           >
-            <Sparkles style={{ width: '20px', height: '20px', color: 'var(--accent-blue)', flexShrink: 0 }} />
-            <p style={{ fontSize: '11.5px', margin: 0, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-              Tersedia <strong>{allAccounts.length} Akun Demo Lengkap</strong> untuk semua divisi &amp; role. Klik akun mana saja di sisi kanan untuk langsung login.
-            </p>
+            <img src="/logo.png" alt="CMOS Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
           </div>
+          <h1 style={{ fontSize: '22px', fontWeight: '800', color: 'var(--text-primary)', margin: 0, lineHeight: 1.2 }}>
+            CMOS ERP
+          </h1>
+          <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '4px 0 0' }}>
+            Creative &amp; Motion Operations System
+          </p>
         </div>
-      </div>
 
-      {/* Right - Login Form & All Accounts Quick Access */}
-      <div
-        style={{
-          width: '100%',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '24px 20px',
-          overflowY: 'auto',
-          maxHeight: '100vh',
-        }}
-        className="lg:w-[55%]"
-      >
-        <div style={{ width: '100%', maxWidth: '520px' }} className="animate-fade-in">
-          {/* Mobile Header */}
-          <div className="lg:hidden" style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '24px', justifyContent: 'center' }}>
-            <div style={{ width: '36px', height: '36px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-              <img src="/logo.png" alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-            </div>
-            <div>
-              <h1 style={{ fontSize: '16px', fontWeight: '800', color: 'var(--text-primary)', lineHeight: 1.2, margin: 0 }}>CMOMS ERP</h1>
-              <p style={{ fontSize: '10px', color: 'var(--text-muted)', margin: 0 }}>Monitoring Desain &amp; Motion</p>
-            </div>
-          </div>
-
+        {/* Main Card */}
+        <div
+          style={{
+            background: 'var(--bg-secondary)',
+            border: '1px solid var(--border-primary)',
+            borderRadius: '16px',
+            boxShadow: 'var(--shadow-dropdown)',
+            padding: '28px',
+          }}
+        >
           <div style={{ marginBottom: '20px' }}>
-            <h2 style={{ fontSize: '22px', fontWeight: '800', color: 'var(--text-primary)', marginBottom: '4px' }}>
+            <h2 style={{ fontSize: '18px', fontWeight: '700', color: 'var(--text-primary)', margin: 0 }}>
               Masuk ke Akun
             </h2>
-            <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
-              Silakan masuk dengan email atau pilih akun dari daftar di bawah
+            <p style={{ fontSize: '12.5px', color: 'var(--text-secondary)', margin: '3px 0 0' }}>
+              Masukkan email dan kata sandi Anda atau gunakan akses instan demo di bawah.
             </p>
           </div>
 
@@ -335,8 +269,8 @@ export default function LoginPage() {
             </div>
           )}
 
-          {/* Direct Credentials Form */}
-          <form onSubmit={handleLogin} className="space-y-3.5" style={{ marginBottom: '24px' }}>
+          {/* Credentials Form */}
+          <form onSubmit={handleLogin} className="space-y-3.5">
             <div>
               <label className="label" style={{ fontSize: '12px', fontWeight: '600' }}>Email Pengguna</label>
               <input
@@ -400,7 +334,7 @@ export default function LoginPage() {
             <button
               type="submit"
               className="btn-primary"
-              style={{ width: '100%', justifyContent: 'center', padding: '10px 16px', fontWeight: '600', fontSize: '13px' }}
+              style={{ width: '100%', justifyContent: 'center', padding: '10px 16px', fontWeight: '600', fontSize: '13px', marginTop: '6px' }}
               disabled={isLoggingIn}
             >
               {isLoggingIn && !loggingInEmail ? (
@@ -414,6 +348,16 @@ export default function LoginPage() {
             </button>
           </form>
 
+          {/* Divider */}
+          <div style={{ position: 'relative', margin: '24px 0 20px 0', textAlign: 'center' }}>
+            <div style={{ position: 'absolute', inset: '0', display: 'flex', alignItems: 'center' }}>
+              <div style={{ width: '100%', borderTop: '1px solid var(--border-primary)' }} />
+            </div>
+            <div style={{ position: 'relative', display: 'inline-block', padding: '0 12px', background: 'var(--bg-secondary)', fontSize: '11px', fontWeight: '600', color: 'var(--text-muted)' }}>
+              atau akses demo instan (1-click)
+            </div>
+          </div>
+
           {/* ============================================================
               ALL ACCOUNTS QUICK ACCESS SECTION
               ============================================================ */}
@@ -421,35 +365,31 @@ export default function LoginPage() {
             style={{
               padding: '16px',
               borderRadius: '12px',
-              background: 'var(--bg-secondary)',
+              background: 'var(--bg-primary)',
               border: '1px solid var(--border-primary)',
             }}
           >
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Users style={{ width: '16px', height: '16px', color: 'var(--accent-blue)' }} />
-                <span style={{ fontSize: '12.5px', fontWeight: '700', color: 'var(--text-primary)' }}>
-                  Quick Access Semua Akun ({allAccounts.length})
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                <Users style={{ width: '15px', height: '15px', color: 'var(--accent-blue)' }} />
+                <span style={{ fontSize: '12px', fontWeight: '700', color: 'var(--text-primary)' }}>
+                  Pilih Akun Demo ({allAccounts.length})
                 </span>
               </div>
               <span
                 style={{
                   fontSize: '10px',
                   fontWeight: '700',
-                  padding: '2px 8px',
+                  padding: '2px 7px',
                   borderRadius: '999px',
-                  background: 'color-mix(in srgb, var(--accent-amber) 15%, transparent)',
-                  color: 'var(--accent-amber)',
-                  border: '1px solid color-mix(in srgb, var(--accent-amber) 30%, transparent)',
+                  background: 'color-mix(in srgb, var(--accent-blue) 12%, transparent)',
+                  color: 'var(--accent-blue)',
+                  border: '1px solid color-mix(in srgb, var(--accent-blue) 25%, transparent)',
                 }}
               >
                 1-Click Login
               </span>
             </div>
-
-            <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '0 0 12px 0', lineHeight: 1.4 }}>
-              Pilih profil pengguna di bawah untuk langsung masuk sesuai role masing-masing tanpa mengetik manual.
-            </p>
 
             {/* Search Input */}
             <div style={{ position: 'relative', marginBottom: '10px' }}>
@@ -509,13 +449,13 @@ export default function LoginPage() {
                     type="button"
                     onClick={() => setSelectedRoleTab(tab.id)}
                     style={{
-                      padding: '4px 9px',
+                      padding: '3px 8px',
                       fontSize: '10.5px',
                       fontWeight: isActive ? '700' : '500',
-                      borderRadius: '6px',
+                      borderRadius: '5px',
                       border: '1px solid',
-                      borderColor: isActive ? 'var(--accent-blue)' : 'var(--border-primary)',
-                      background: isActive ? 'var(--accent-blue)' : 'var(--bg-primary)',
+                      borderColor: isActive ? 'var(--accent-blue)' : 'var(--border-secondary)',
+                      background: isActive ? 'var(--accent-blue)' : 'var(--bg-secondary)',
                       color: isActive ? '#ffffff' : 'var(--text-secondary)',
                       cursor: 'pointer',
                       whiteSpace: 'nowrap',
@@ -532,16 +472,16 @@ export default function LoginPage() {
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))',
                 gap: '8px',
-                maxHeight: '260px',
+                maxHeight: '230px',
                 overflowY: 'auto',
                 paddingRight: '4px',
               }}
               className="custom-scrollbar"
             >
               {filteredAccounts.length === 0 ? (
-                <div style={{ gridColumn: '1 / -1', padding: '24px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: '11.5px' }}>
+                <div style={{ gridColumn: '1 / -1', padding: '20px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: '11.5px' }}>
                   Tidak ada akun yang cocok dengan pencarian "{searchAccountQuery}"
                 </div>
               ) : (
@@ -559,11 +499,11 @@ export default function LoginPage() {
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
-                        padding: '8px 10px',
-                        borderRadius: '8px',
+                        padding: '7px 9px',
+                        borderRadius: '7px',
                         textAlign: 'left',
                         cursor: isLoggingIn ? 'not-allowed' : 'pointer',
-                        background: 'var(--bg-primary)',
+                        background: 'var(--bg-secondary)',
                         border: '1px solid var(--border-primary)',
                         transition: 'all 0.15s ease',
                         position: 'relative',
@@ -574,7 +514,7 @@ export default function LoginPage() {
                         if (!isLoggingIn) {
                           e.currentTarget.style.borderColor = 'var(--accent-blue)';
                           e.currentTarget.style.transform = 'translateY(-1px)';
-                          e.currentTarget.style.boxShadow = '0 3px 8px rgba(0,0,0,0.06)';
+                          e.currentTarget.style.boxShadow = '0 2px 6px rgba(0,0,0,0.06)';
                         }
                       }}
                       onMouseLeave={(e) => {
@@ -589,16 +529,16 @@ export default function LoginPage() {
                         {/* Avatar Initials */}
                         <div
                           style={{
-                            width: '28px',
-                            height: '28px',
-                            borderRadius: '7px',
+                            width: '26px',
+                            height: '26px',
+                            borderRadius: '6px',
                             background: 'color-mix(in srgb, var(--accent-blue) 12%, transparent)',
                             color: 'var(--accent-blue)',
                             border: '1px solid color-mix(in srgb, var(--accent-blue) 25%, transparent)',
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center',
-                            fontSize: '10px',
+                            fontSize: '9.5px',
                             fontWeight: '800',
                             flexShrink: 0,
                           }}
@@ -611,7 +551,7 @@ export default function LoginPage() {
                           <p
                             style={{
                               fontWeight: '700',
-                              fontSize: '11.5px',
+                              fontSize: '11px',
                               color: 'var(--text-primary)',
                               margin: 0,
                               whiteSpace: 'nowrap',
@@ -622,10 +562,10 @@ export default function LoginPage() {
                             {acc.name}
                           </p>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '4px', marginTop: '1px' }}>
-                            <RoleIcon style={{ width: '10px', height: '10px', color: 'var(--text-muted)', flexShrink: 0 }} />
+                            <RoleIcon style={{ width: '9px', height: '9px', color: 'var(--text-muted)', flexShrink: 0 }} />
                             <span
                               style={{
-                                fontSize: '10px',
+                                fontSize: '9.5px',
                                 fontWeight: '600',
                                 color: 'var(--text-muted)',
                                 whiteSpace: 'nowrap',
@@ -644,8 +584,8 @@ export default function LoginPage() {
                         {isCurrentLoggingIn ? (
                           <div
                             style={{
-                              width: '14px',
-                              height: '14px',
+                              width: '13px',
+                              height: '13px',
                               border: '2px solid var(--accent-blue)',
                               borderTopColor: 'transparent',
                               borderRadius: '50%',
@@ -655,7 +595,7 @@ export default function LoginPage() {
                         ) : (
                           <span
                             style={{
-                              fontSize: '10px',
+                              fontSize: '9.5px',
                               fontWeight: '700',
                               color: 'var(--accent-blue)',
                               opacity: 0.8,
@@ -671,12 +611,14 @@ export default function LoginPage() {
               )}
             </div>
           </div>
-
-          <p style={{ marginTop: '20px', textAlign: 'center', fontSize: '11px', color: 'var(--text-muted)' }}>
-            Orbiz Creative Operations • Monitoring Desain &amp; Motion © 2026
-          </p>
         </div>
+
+        {/* Footer */}
+        <p style={{ marginTop: '20px', textAlign: 'center', fontSize: '11px', color: 'var(--text-muted)' }}>
+          Orbiz Creative Operations • Monitoring Desain &amp; Motion © 2026
+        </p>
       </div>
     </div>
   );
 }
+

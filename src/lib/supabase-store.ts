@@ -1,5 +1,5 @@
 // ============================================================
-// CMOMS - Supabase Data Store (Async)
+// CMOS - Supabase Data Store (Async)
 // ============================================================
 // Catatan: Ini adalah versi ASINKRON (Promise-based) dari store.ts
 // Semua pemanggilan fungsi di bawah ini harus menggunakan await atau .then()

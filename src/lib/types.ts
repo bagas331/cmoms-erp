@@ -1,5 +1,5 @@
 // ============================================================
-// CMOMS - Creative & Motion Operations Management System
+// CMOS - Creative & Motion Operations System
 // Core TypeScript Type Definitions
 // ============================================================
 

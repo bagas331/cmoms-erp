@@ -1,5 +1,5 @@
 // ============================================================
-// CMOMS - Operational Analytics & Pivot Table Engine
+// CMOS - Operational Analytics & Pivot Table Engine
 // Single Source of Truth Calculation Layer
 // ============================================================
 
