@@ -727,18 +727,18 @@ function TasksPageContent() {
         </div>
 
         {/* Bottom Row: Filters & Actions */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 mt-1" style={{ borderTop: '1px solid var(--border-secondary)' }}>
-          <div className="flex flex-wrap items-center gap-3 flex-1">
-            {/* Filter Group: Unified Pill */}
-            <div className="flex flex-wrap items-center bg-[var(--bg-secondary)] rounded-lg border border-[var(--border-primary)] shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-3 mt-1 border-t border-[var(--border-secondary)]">
+          <div className="flex items-center gap-2.5 flex-1 overflow-x-auto custom-scrollbar py-0.5 max-w-full">
+            {/* Filter Group: Unified Pill (Always straight / 1 row) */}
+            <div className="inline-flex items-center flex-nowrap bg-[var(--bg-secondary)] rounded-lg border border-[var(--border-primary)] shadow-sm shrink-0">
               
               {/* Month Dropdown */}
               <div className="relative" ref={monthDropdownRef}>
                 <button 
                   onClick={() => { setShowMonthDropdown(!showMonthDropdown); setShowYearDropdown(false); }}
-                  className="px-4 py-2 h-[38px] flex items-center justify-between min-w-[130px] bg-transparent hover:bg-[var(--bg-tertiary)] rounded-l-lg transition-colors focus:outline-none"
+                  className="px-3 py-1.5 h-[36px] flex items-center justify-between min-w-[110px] bg-transparent hover:bg-[var(--bg-tertiary)] rounded-l-lg transition-colors text-xs font-medium text-[var(--text-primary)] focus:outline-none"
                 >
-                  <span className="text-sm font-medium text-[var(--text-primary)] flex items-center gap-2">
+                  <span className="text-xs font-medium text-[var(--text-primary)] flex items-center gap-1.5">
                     {filterMonths.length === 0 ? 'All Months' : filterMonths.length === 1 ? getMonthName(filterMonths[0]) : `${filterMonths.length} Months`}
                   </span>
                   <ChevronDown className="w-4 h-4 ml-2 opacity-50" />
@@ -781,15 +781,15 @@ function TasksPageContent() {
               )}
               </div>
 
-              <div className="w-px h-5 bg-[var(--border-primary)]"></div>
+              <div className="w-px h-4 bg-[var(--border-primary)]" />
 
               {/* Year Dropdown */}
               <div className="relative" ref={yearDropdownRef}>
                 <button 
                   onClick={() => { setShowYearDropdown(!showYearDropdown); setShowMonthDropdown(false); }}
-                  className="px-4 py-2 h-[38px] flex items-center justify-between min-w-[110px] bg-transparent hover:bg-[var(--bg-tertiary)] transition-colors focus:outline-none"
+                  className="px-3 py-1.5 h-[36px] flex items-center justify-between min-w-[95px] bg-transparent hover:bg-[var(--bg-tertiary)] transition-colors text-xs font-medium text-[var(--text-primary)] focus:outline-none"
                 >
-                  <span className="text-sm font-medium text-[var(--text-primary)]">
+                  <span className="text-xs font-medium text-[var(--text-primary)]">
                     {filterYears.length === 0 ? 'All Years' : filterYears.length === 1 ? filterYears[0] : `${filterYears.length} Years`}
                   </span>
                   <ChevronDown className="w-4 h-4 ml-2 opacity-50" />
@@ -832,62 +832,62 @@ function TasksPageContent() {
                 )}
               </div>
               
-              <div className="w-px h-5 bg-[var(--border-primary)]"></div>
+              <div className="w-px h-4 bg-[var(--border-primary)]" />
 
               {/* Date Input */}
               <div className="flex items-center">
                 <input 
                   type="date" 
-                  className="px-4 py-2 h-[38px] text-sm bg-transparent border-none focus:outline-none focus:ring-0 min-w-[140px] transition-all hover:bg-[var(--bg-tertiary)]" 
+                  className="px-2.5 py-1.5 h-[36px] text-xs bg-transparent border-none focus:outline-none min-w-[125px] transition-all hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]" 
                   value={filterExactDate} 
                   onChange={(e) => setFilterExactDate(e.target.value)} 
                   title="Filter by Exact Date (Overrides Month)"
                 />
               </div>
 
-              <div className="w-px h-5 bg-[var(--border-primary)]"></div>
+              <div className="w-px h-4 bg-[var(--border-primary)]" />
 
               {/* Status Dropdown */}
               <div className="flex items-center">
-                <select className="px-4 py-2 h-[38px] text-sm bg-transparent border-none focus:outline-none focus:ring-0 min-w-[140px] transition-all hover:bg-[var(--bg-tertiary)] cursor-pointer" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
-                  <option value="all">All Status</option>
+                <select className="px-2.5 py-1.5 h-[36px] text-xs bg-transparent border-none focus:outline-none min-w-[110px] transition-all hover:bg-[var(--bg-tertiary)] cursor-pointer text-[var(--text-primary)]" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+                  <option value="all" className="bg-[var(--bg-secondary)]">All Status</option>
                   {Object.entries(DESIGN_STATUS_LABELS).map(([k, v]) => (
-                    <option key={k} value={k}>{v}</option>
+                    <option key={k} value={k} className="bg-[var(--bg-secondary)]">{v}</option>
                   ))}
                 </select>
               </div>
 
-              <div className="w-px h-5 bg-[var(--border-primary)]"></div>
+              <div className="w-px h-4 bg-[var(--border-primary)]" />
 
               {/* Role Dropdown */}
               <div className="flex items-center">
                 <select 
-                  className="px-4 py-2 h-[38px] text-sm bg-transparent border-none focus:outline-none focus:ring-0 min-w-[130px] transition-all hover:bg-[var(--bg-tertiary)] cursor-pointer" 
+                  className="px-2.5 py-1.5 h-[36px] text-xs bg-transparent border-none focus:outline-none min-w-[110px] transition-all hover:bg-[var(--bg-tertiary)] cursor-pointer text-[var(--text-primary)]" 
                   value={filterRole} 
                   onChange={(e) => {
                     setFilterRole(e.target.value);
                     setFilterUser('all');
                   }}
                 >
-                  <option value="all">Semua Role</option>
-                  <option value="REQUESTER">Requester</option>
-                  <option value="STRATEGIC_PIC">Strategic PIC</option>
-                  <option value="DESIGNER">Graphic Designer</option>
+                  <option value="all" className="bg-[var(--bg-secondary)]">Semua Role</option>
+                  <option value="REQUESTER" className="bg-[var(--bg-secondary)]">Requester</option>
+                  <option value="STRATEGIC_PIC" className="bg-[var(--bg-secondary)]">Strategic PIC</option>
+                  <option value="DESIGNER" className="bg-[var(--bg-secondary)]">Graphic Designer</option>
                 </select>
               </div>
 
-              <div className="w-px h-5 bg-[var(--border-primary)]"></div>
+              <div className="w-px h-4 bg-[var(--border-primary)]" />
 
               {/* Name / User Dropdown */}
               <div className="flex items-center">
                 <select 
-                  className="px-4 py-2 h-[38px] text-sm bg-transparent border-none focus:outline-none focus:ring-0 min-w-[140px] rounded-r-lg transition-all hover:bg-[var(--bg-tertiary)] cursor-pointer" 
+                  className="px-2.5 py-1.5 h-[36px] text-xs bg-transparent border-none focus:outline-none min-w-[130px] rounded-r-lg transition-all hover:bg-[var(--bg-tertiary)] cursor-pointer text-[var(--text-primary)]" 
                   value={filterUser} 
                   onChange={(e) => setFilterUser(e.target.value)}
                 >
-                  <option value="all">Semua Nama / PIC</option>
+                  <option value="all" className="bg-[var(--bg-secondary)]">Semua Nama / PIC</option>
                   {userOptions.map(u => (
-                    <option key={u.id} value={u.id}>
+                    <option key={u.id} value={u.id} className="bg-[var(--bg-secondary)]">
                       {u.full_name} {filterRole === 'all' && u.role_name ? `(${u.role_name})` : ''}
                     </option>
                   ))}

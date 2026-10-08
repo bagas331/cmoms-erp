@@ -833,8 +833,9 @@ function MotionPageContent() {
 
             {/* Bottom Row: Unified Filter Bar */}
             <div className="flex flex-wrap items-center justify-between gap-3 pt-3 mt-1 border-t border-[var(--border-secondary)]">
-              <div className="flex flex-wrap items-center gap-2.5 flex-1">
-                <div className="flex flex-wrap items-center bg-[var(--bg-secondary)] rounded-lg border border-[var(--border-primary)] shadow-sm">
+              <div className="flex items-center gap-2.5 flex-1 overflow-x-auto custom-scrollbar py-0.5 max-w-full">
+                {/* Filter Group: Unified Pill (Always straight / 1 row) */}
+                <div className="inline-flex items-center flex-nowrap bg-[var(--bg-secondary)] rounded-lg border border-[var(--border-primary)] shadow-sm shrink-0">
                   
                   {/* Month Dropdown */}
                   <div className="relative" ref={monthDropdownRef}>
