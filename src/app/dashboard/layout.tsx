@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
+import { useClickOutside } from '@/lib/use-click-outside';
 import { getNotifications, markNotificationsRead, markNotificationAsRead } from '@/lib/supabase-store';
 import { supabase } from '@/lib/supabase';
 import { Notification } from '@/lib/types';
@@ -11,8 +12,9 @@ import { ROLE_LABELS, ROLE_COLORS } from '@/lib/constants';
 import {
   LayoutDashboard, ClipboardList, Film, Users, BarChart3,
   Settings, Database, Calendar, LogOut, Bell,
-  Building2, FileType, X, Menu, CheckCheck,
-  MessageSquare, RefreshCw, AlertTriangle, CheckCircle2
+  Building2, FileType, X, CheckCheck,
+  MessageSquare, RefreshCw, AlertTriangle, CheckCircle2,
+  PanelLeftClose, PanelLeftOpen
 } from 'lucide-react';
 import { formatRelativeTime } from '@/lib/utils';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -24,7 +26,6 @@ const NAV_ITEMS = [
   { href: '/dashboard/capacity', label: 'Workload & Capacity', icon: Users, roles: ['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'DESIGNER', 'MOTION_PIC'] },
   { href: '/dashboard/reports', label: 'Reports & Analytics', icon: BarChart3, roles: ['ADMIN', 'TEAM_LEAD'] },
 ];
-
 
 const ADMIN_ITEMS = [
   { href: '/dashboard/admin/clients', label: 'Clients / Brands', icon: Building2, roles: ['ADMIN', 'TEAM_LEAD'] },
@@ -42,6 +43,25 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [showNotif, setShowNotif] = useState(false);
   const [notifCategory, setNotifCategory] = useState<'all' | 'messages' | 'status' | 'revisions'>('all');
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+
+  const notifRef = useRef<HTMLDivElement>(null);
+  useClickOutside(notifRef, () => setShowNotif(false), showNotif);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('cmos_sidebar_collapsed');
+    if (saved !== null) {
+      setIsCollapsed(saved === 'true');
+    }
+  }, []);
+
+  const toggleSidebar = () => {
+    setIsCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem('cmos_sidebar_collapsed', String(next));
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
@@ -123,36 +143,75 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     setNotifications(updated);
   };
 
-  const SidebarContent = () => (
+  const SidebarContent = ({ isMini = false }: { isMini?: boolean }) => (
     <>
-      {/* Logo */}
-      <div style={{ padding: '16px 16px', display: 'flex', alignItems: 'center', gap: '10px', borderBottom: '1px solid var(--border-primary)' }}>
-        <div style={{ width: '32px', height: '32px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, overflow: 'hidden' }}>
-          <img src="/logo.png" alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <h1 style={{ fontWeight: '700', color: 'var(--text-primary)', fontSize: '14px', letterSpacing: '-0.3px', margin: 0, lineHeight: '1.2' }}>Monitoring</h1>
-          <p style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: '500', margin: 0, lineHeight: '1.2' }}>Desain Internal & External</p>
+      {/* Logo Header */}
+      <div
+        style={{
+          padding: isMini ? '12px 0' : '12px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: isMini ? 'center' : 'flex-start',
+          borderBottom: '1px solid var(--border-primary)',
+          height: '52px',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
+          <div
+            style={{
+              width: '32px',
+              height: '32px',
+              borderRadius: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              overflow: 'hidden',
+            }}
+            title="CMOS ERP"
+          >
+            <img src="/logo.png" alt="CMOS Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+          </div>
+          {!isMini && (
+            <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+              <h1 style={{ fontWeight: '700', color: 'var(--text-primary)', fontSize: '14px', letterSpacing: '-0.3px', margin: 0, lineHeight: '1.2' }}>
+                CMOS ERP
+              </h1>
+              <p style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: '500', margin: 0, lineHeight: '1.2' }}>
+                Creative &amp; Motion
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
       {/* Navigation */}
       <nav style={{ padding: '12px 0', flex: 1, display: 'flex', flexDirection: 'column', gap: '4px', overflowY: 'auto' }} className="custom-scrollbar">
-        <div style={{ padding: '0 16px', marginBottom: '4px' }}>
-          <p style={{ fontSize: '10px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
-            Main Menu
-          </p>
-        </div>
+        {!isMini ? (
+          <div style={{ padding: '0 16px', marginBottom: '4px' }}>
+            <p style={{ fontSize: '10px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
+              Main Menu
+            </p>
+          </div>
+        ) : (
+          <div style={{ padding: '0 12px', marginBottom: '4px' }}>
+            <div style={{ borderTop: '1px solid var(--border-primary)', margin: '4px 0' }} />
+          </div>
+        )}
         
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', padding: '0 8px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', padding: isMini ? '0 6px' : '0 8px' }}>
           {filteredNav.map(item => {
             const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href));
             return (
-              <Link key={item.href} href={item.href}
+              <Link
+                key={item.href}
+                href={item.href}
                 className={`sidebar-link ${isActive ? 'active' : ''}`}
-                onClick={() => setShowMobileSidebar(false)}>
+                title={isMini ? item.label : undefined}
+                onClick={() => setShowMobileSidebar(false)}
+              >
                 <item.icon style={{ width: '16px', height: '16px', strokeWidth: isActive ? '2.5' : '2', flexShrink: 0 }} />
-                <span>{item.label}</span>
+                {!isMini && <span>{item.label}</span>}
               </Link>
             );
           })}
@@ -160,20 +219,30 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         {filteredAdmin.length > 0 && (
           <>
-            <div style={{ padding: '0 16px', marginTop: '16px', marginBottom: '4px' }}>
-              <p style={{ fontSize: '10px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
-                Administration
-              </p>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', padding: '0 8px' }}>
+            {!isMini ? (
+              <div style={{ padding: '0 16px', marginTop: '16px', marginBottom: '4px' }}>
+                <p style={{ fontSize: '10px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
+                  Administration
+                </p>
+              </div>
+            ) : (
+              <div style={{ padding: '0 12px', margin: '8px 0 4px 0' }}>
+                <div style={{ borderTop: '1px solid var(--border-primary)' }} />
+              </div>
+            )}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', padding: isMini ? '0 6px' : '0 8px' }}>
               {filteredAdmin.map(item => {
                 const isActive = pathname === item.href;
                 return (
-                  <Link key={item.href} href={item.href}
+                  <Link
+                    key={item.href}
+                    href={item.href}
                     className={`sidebar-link ${isActive ? 'active' : ''}`}
-                    onClick={() => setShowMobileSidebar(false)}>
+                    title={isMini ? item.label : undefined}
+                    onClick={() => setShowMobileSidebar(false)}
+                  >
                     <item.icon style={{ width: '16px', height: '16px', strokeWidth: isActive ? '2.5' : '2', flexShrink: 0 }} />
-                    <span>{item.label}</span>
+                    {!isMini && <span>{item.label}</span>}
                   </Link>
                 );
               })}
@@ -182,26 +251,64 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         )}
       </nav>
 
-      {/* User Profile */}
-      <div style={{ padding: '12px 12px', borderTop: '1px solid var(--border-primary)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px', borderRadius: '6px' }}>
-          <div style={{
-            width: '32px', height: '32px', borderRadius: '6px', display: 'flex',
-            alignItems: 'center', justifyContent: 'center', fontSize: '11px',
-            fontWeight: '700', color: '#fff', background: 'var(--accent-blue)', flexShrink: 0
-          }}>
+      {/* User Profile Footer */}
+      <div
+        style={{
+          padding: isMini ? '12px 6px' : '12px 12px',
+          borderTop: '1px solid var(--border-primary)',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: isMini ? 'center' : 'space-between',
+            gap: isMini ? '0' : '10px',
+            padding: isMini ? '4px 0' : '8px',
+            borderRadius: '6px',
+          }}
+        >
+          <div
+            style={{
+              width: '32px',
+              height: '32px',
+              borderRadius: '6px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              fontSize: '11px',
+              fontWeight: '700',
+              color: '#fff',
+              background: 'var(--accent-blue)',
+              flexShrink: 0,
+            }}
+            title={`${user.full_name} (${ROLE_LABELS[user.role_name]})`}
+          >
             {user.avatar_initials}
           </div>
-          <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>
-            <p style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.2 }}>{user.full_name}</p>
-            <span className={`badge ${ROLE_COLORS[user.role_name]}`} style={{ fontSize: '10px', padding: '1px 5px', alignSelf: 'flex-start' }}>
-              {ROLE_LABELS[user.role_name]}
-            </span>
-          </div>
-          <button onClick={handleLogout} className="btn-ghost" style={{ padding: '6px', borderRadius: '6px' }} title="Logout">
-            <LogOut style={{ width: '16px', height: '16px' }} />
-          </button>
+          {!isMini && (
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+              <p style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.2 }}>
+                {user.full_name}
+              </p>
+              <span className={`badge ${ROLE_COLORS[user.role_name]}`} style={{ fontSize: '10px', padding: '1px 5px', alignSelf: 'flex-start' }}>
+                {ROLE_LABELS[user.role_name]}
+              </span>
+            </div>
+          )}
+          {!isMini ? (
+            <button onClick={handleLogout} className="btn-ghost" style={{ padding: '6px', borderRadius: '6px' }} title="Logout">
+              <LogOut style={{ width: '16px', height: '16px' }} />
+            </button>
+          ) : null}
         </div>
+        {isMini && (
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '4px' }}>
+            <button onClick={handleLogout} className="btn-ghost" style={{ padding: '6px', borderRadius: '6px' }} title="Logout">
+              <LogOut style={{ width: '15px', height: '15px' }} />
+            </button>
+          </div>
+        )}
       </div>
     </>
   );
@@ -209,8 +316,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <div style={{ background: 'var(--bg-primary)' }}>
       {/* Desktop Sidebar */}
-      <aside className="sidebar hidden lg:flex flex-col">
-        <SidebarContent />
+      <aside className={`sidebar hidden lg:flex flex-col ${isCollapsed ? 'collapsed' : ''}`}>
+        <SidebarContent isMini={isCollapsed} />
       </aside>
 
       {/* Mobile Sidebar Overlay */}
@@ -221,18 +328,31 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <button onClick={() => setShowMobileSidebar(false)} className="absolute top-3 right-3 btn-ghost p-1">
               <X className="w-4 h-4" />
             </button>
-            <SidebarContent />
+            <SidebarContent isMini={false} />
           </aside>
         </div>
       )}
 
       {/* Topbar */}
-      <header className="topbar">
-        <div className="flex items-center gap-3">
-          <button onClick={() => setShowMobileSidebar(true)} className="lg:hidden btn-ghost p-1.5">
-            <Menu className="w-5 h-5" />
+      <header className={`topbar ${isCollapsed ? 'sidebar-collapsed' : ''}`}>
+        <div className="flex items-center gap-2.5">
+          {/* Sidebar collapse/expand toggle */}
+          <button
+            type="button"
+            onClick={() => {
+              if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+                setShowMobileSidebar(true);
+              } else {
+                toggleSidebar();
+              }
+            }}
+            className="btn-ghost p-1.5 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            title={isCollapsed ? "Buka Sidebar" : "Ciutkan Sidebar"}
+          >
+            {isCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
           </button>
-          <h2 style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }} className="hidden sm:block">
+
+          <h2 style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>
             {filteredNav.find(n => pathname === n.href || (n.href !== '/dashboard' && pathname.startsWith(n.href)))?.label
               || filteredAdmin.find(n => pathname === n.href)?.label
               || 'Dashboard'}
@@ -244,7 +364,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <ThemeToggle />
 
           {/* Notifications */}
-          <div className="relative">
+          <div className="relative" ref={notifRef}>
             <button 
               onClick={() => setShowNotif(!showNotif)} 
               className="btn-ghost p-2 relative rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors"
@@ -438,7 +558,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {showNotif && <div className="fixed inset-0 z-20" onClick={() => setShowNotif(false)} />}
 
       {/* Main Content */}
-      <main className="main-content">
+      <main className={`main-content ${isCollapsed ? 'sidebar-collapsed' : ''}`}>
         <div className="animate-fade-in">
           {children}
         </div>

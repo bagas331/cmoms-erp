@@ -22,6 +22,8 @@ import {
 import { TaskChatSection } from '@/components/task-chat-section';
 import { MotionKanbanCard } from '@/components/motion-kanban-card';
 import { supabase } from '@/lib/supabase';
+import { usePersistedState } from '@/lib/use-persistent-state';
+import { useClickOutside } from '@/lib/use-click-outside';
 import { 
   MOTION_KANBAN_COLUMNS, 
   MOTION_STATUS_COLORS, 
@@ -119,7 +121,7 @@ function MotionPageContent() {
   const [loading, setLoading] = useState(true);
 
   // View Mode: 'kanban' | 'table'
-  const [viewMode, setViewMode] = useState<'kanban' | 'table'>('kanban');
+  const [viewMode, setViewMode] = usePersistedState<'kanban' | 'table'>('cmos_motion_view_mode', 'kanban');
 
   // Modal States
   const [showAssign, setShowAssign] = useState<string | null>(null);
@@ -127,7 +129,7 @@ function MotionPageContent() {
   const [detailInitialTab, setDetailInitialTab] = useState<'details' | 'chat'>('details');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState<string | null>(null);
-  const [showSubmitModal, setShowSubmitModal] = useState<string | null>(null);
+  const [showSubmitModal, setShowSubmitModal] = useState<{ taskId: string; targetAfterSubmit?: MotionStatus | null } | string | null>(null);
   const [showRevisionModal, setShowRevisionModal] = useState<string | null>(null);
   const [showHandoverModal, setShowHandoverModal] = useState<string | null>(null);
 
@@ -152,32 +154,39 @@ function MotionPageContent() {
   const [dragOverMotionCol, setDragOverMotionCol] = useState<string | null>(null);
 
   // Filter States
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterStatus, setFilterStatus] = useState<string>('all');
-  const [filterPic, setFilterPic] = useState<string>('all');
-  const [filterClient, setFilterClient] = useState<string>('all');
-  const [filterMonths, setFilterMonths] = useState<string[]>([]);
-  const [filterYears, setFilterYears] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = usePersistedState<string>('cmos_motion_search', '');
+  const [filterStatus, setFilterStatus] = usePersistedState<string>('cmos_motion_filter_status', 'all');
+  const [filterPic, setFilterPic] = usePersistedState<string>('cmos_motion_filter_pic', 'all');
+  const [filterRole, setFilterRole] = usePersistedState<string>('cmos_motion_filter_role', 'all');
+  const [filterUser, setFilterUser] = usePersistedState<string>('cmos_motion_filter_user', 'all');
+  const [filterClient, setFilterClient] = usePersistedState<string>('cmos_motion_filter_client', 'all');
+  const [filterMonths, setFilterMonths] = usePersistedState<string[]>('cmos_motion_filter_months', []);
+  const [filterYears, setFilterYears] = usePersistedState<string[]>('cmos_motion_filter_years', []);
   const [showMonthDropdown, setShowMonthDropdown] = useState(false);
   const [showYearDropdown, setShowYearDropdown] = useState(false);
-  const [filterExactDate, setFilterExactDate] = useState<string>('');
+  const monthDropdownRef = useRef<HTMLDivElement>(null);
+  const yearDropdownRef = useRef<HTMLDivElement>(null);
+
+  useClickOutside(monthDropdownRef, () => setShowMonthDropdown(false), showMonthDropdown);
+  useClickOutside(yearDropdownRef, () => setShowYearDropdown(false), showYearDropdown);
+  const [filterExactDate, setFilterExactDate] = usePersistedState<string>('cmos_motion_filter_exact_date', '');
 
   // Section Navigation: 'active' | 'archive'
-  const [mainTab, setMainTab] = useState<'active' | 'archive'>('active');
+  const [mainTab, setMainTab] = usePersistedState<'active' | 'archive'>('cmos_motion_main_tab', 'active');
 
   // Approved Archive Filters, Period Navigation & View Mode
-  const [archiveViewMode, setArchiveViewMode] = useState<'kanban' | 'table'>('kanban');
-  const [archiveYear, setArchiveYear] = useState<string>(String(new Date().getFullYear()));
-  const [archiveMonth, setArchiveMonth] = useState<string>(String(new Date().getMonth() + 1));
-  const [archiveWeek, setArchiveWeek] = useState<string>('all');
-  const [archiveSearch, setArchiveSearch] = useState<string>('');
-  const [archivePic, setArchivePic] = useState<string>('all');
-  const [archiveClient, setArchiveClient] = useState<string>('all');
-  const [archiveStudio, setArchiveStudio] = useState<string>('all');
-  const [archivePlatform, setArchivePlatform] = useState<string>('all');
-  const [archiveSort, setArchiveSort] = useState<string>('approved_desc');
-  const [archivePage, setArchivePage] = useState<number>(1);
-  const [archiveLimit, setArchiveLimit] = useState<number>(15);
+  const [archiveViewMode, setArchiveViewMode] = usePersistedState<'kanban' | 'table'>('cmos_motion_archive_view_mode', 'kanban');
+  const [archiveYear, setArchiveYear] = usePersistedState<string>('cmos_motion_archive_year', String(new Date().getFullYear()));
+  const [archiveMonth, setArchiveMonth] = usePersistedState<string>('cmos_motion_archive_month', String(new Date().getMonth() + 1));
+  const [archiveWeek, setArchiveWeek] = usePersistedState<string>('cmos_motion_archive_week', 'all');
+  const [archiveSearch, setArchiveSearch] = usePersistedState<string>('cmos_motion_archive_search', '');
+  const [archivePic, setArchivePic] = usePersistedState<string>('cmos_motion_archive_pic', 'all');
+  const [archiveClient, setArchiveClient] = usePersistedState<string>('cmos_motion_archive_client', 'all');
+  const [archiveStudio, setArchiveStudio] = usePersistedState<string>('cmos_motion_archive_studio', 'all');
+  const [archivePlatform, setArchivePlatform] = usePersistedState<string>('cmos_motion_archive_platform', 'all');
+  const [archiveSort, setArchiveSort] = usePersistedState<string>('cmos_motion_archive_sort', 'approved_desc');
+  const [archivePage, setArchivePage] = usePersistedState<number>('cmos_motion_archive_page', 1);
+  const [archiveLimit, setArchiveLimit] = usePersistedState<number>('cmos_motion_archive_limit', 15);
 
   // Table Sort State
   const [sortField, setSortField] = useState<'id' | 'client' | 'campaign' | 'status' | 'date'>('date');
@@ -191,6 +200,22 @@ function MotionPageContent() {
   ])).sort().reverse();
 
   const motionUsers = allUsers.filter(u => ['MOTION_PIC', 'TEAM_LEAD'].includes(u.role_name));
+
+  const motionUserOptions = useMemo(() => {
+    let list = allUsers;
+    if (filterRole === 'MOTION_PIC') {
+      list = allUsers.filter(u => ['MOTION_PIC', 'TEAM_LEAD'].includes(u.role_name));
+    } else if (filterRole === 'REQUESTER') {
+      list = allUsers.filter(u => u.role_name === 'REQUESTER');
+    } else if (filterRole === 'STRATEGIC_PIC') {
+      list = allUsers.filter(u => ['STRATEGIC_PIC', 'TEAM_LEAD'].includes(u.role_name));
+    } else if (filterRole === 'DESIGNER') {
+      list = allUsers.filter(u => ['DESIGNER', 'TEAM_LEAD'].includes(u.role_name));
+    } else if (filterRole === 'OPERATOR') {
+      list = allUsers.filter(u => u.role_name === 'OPERATOR');
+    }
+    return list;
+  }, [allUsers, filterRole]);
 
   const uniquePics = Array.from(new Set(motionTasks.map(t => 
     t.motion_pic_id ? motionUsers.find(u => u.id === t.motion_pic_id)?.full_name || 'Unassigned' : 'Unassigned'
@@ -561,10 +586,18 @@ function MotionPageContent() {
           alert('Hanya Motion Designer yang ditugaskan atau Lead yang dapat men-submit hasil motion.');
           return;
         }
-        setShowSubmitModal(mt.id);
+        setShowSubmitModal({ taskId: mt.id, targetAfterSubmit: null });
       } else if (targetStatus === 'REVISION') {
+        if (mt.status_motion !== 'SUBMITTED') {
+          setShowSubmitModal({ taskId: mt.id, targetAfterSubmit: 'REVISION' });
+          return;
+        }
         setShowRevisionModal(mt.id);
       } else if (targetStatus === 'APPROVED') {
+        if (mt.status_motion !== 'SUBMITTED') {
+          setShowSubmitModal({ taskId: mt.id, targetAfterSubmit: 'APPROVED' });
+          return;
+        }
         if (!['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'REQUESTER'].includes(user.role_name)) {
           alert('Hanya Requester, Team Lead, atau Admin yang dapat menyetujui motion.');
           return;
@@ -575,11 +608,16 @@ function MotionPageContent() {
           alert('Hanya Admin atau Team Lead yang dapat melakukan handover/complete.');
           return;
         }
+        if (mt.status_motion !== 'APPROVED') {
+          alert('Hanya motion yang sudah di-approve yang dapat di-complete/handover.');
+          return;
+        }
         setShowHandoverModal(mt.id);
       }
     } catch (err: any) {
       console.error('Error on motion drop transition:', err);
-      alert(`Gagal mengubah status: ${err?.message || err}`);
+      const errMsg = err?.message || err?.details || (typeof err === 'object' ? JSON.stringify(err) : String(err));
+      alert(`Gagal mengubah status: ${errMsg}`);
     }
   };
 
@@ -588,6 +626,8 @@ function MotionPageContent() {
     const pt = mt.parentTask;
     const clientName = pt?.client_name || allClients.find(c => c.id === mt.client_id)?.name || 'Unknown Client';
     const motionPicName = mt.motion_pic_id ? motionUsers.find(u => u.id === mt.motion_pic_id)?.full_name || 'Unassigned' : 'Unassigned';
+    const creatorUser = pt?.created_by ? allUsers.find(u => u.id === pt.created_by) : null;
+    const creatorName = creatorUser?.full_name || '';
 
     const matchSearch = searchQuery === '' ||
       (pt?.task_code || mt.id || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -596,7 +636,8 @@ function MotionPageContent() {
       (mt.motion_type || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       (mt.studio || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       (mt.platform || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      motionPicName.toLowerCase().includes(searchQuery.toLowerCase());
+      motionPicName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      creatorName.toLowerCase().includes(searchQuery.toLowerCase());
     
     const matchStatus = filterStatus === 'all' || mt.status_motion === filterStatus;
     const matchPic = filterPic === 'all' || motionPicName === filterPic;
@@ -615,7 +656,43 @@ function MotionPageContent() {
       const matchYear = filterYears.length === 0 || (!!createdYear && filterYears.includes(createdYear)) || (!!reqYear && filterYears.includes(reqYear));
       matchDate = Boolean(matchMonth && matchYear);
     }
-    return matchSearch && matchStatus && matchPic && matchClient && matchDate;
+
+    // Role & User Filtering
+    let matchRoleAndUser = true;
+    if (filterUser !== 'all') {
+      if (filterRole === 'MOTION_PIC') {
+        matchRoleAndUser = mt.motion_pic_id === filterUser;
+      } else if (filterRole === 'REQUESTER') {
+        matchRoleAndUser = pt?.created_by === filterUser;
+      } else if (filterRole === 'STRATEGIC_PIC') {
+        matchRoleAndUser = pt?.strat_pic_id === filterUser || Boolean(pt?.strat_pic_ids && pt.strat_pic_ids.includes(filterUser));
+      } else if (filterRole === 'DESIGNER') {
+        matchRoleAndUser = pt?.design_pic_id === filterUser;
+      } else if (filterRole === 'OPERATOR') {
+        matchRoleAndUser = mt.operator_id === filterUser;
+      } else {
+        matchRoleAndUser = mt.motion_pic_id === filterUser ||
+          pt?.created_by === filterUser ||
+          mt.operator_id === filterUser ||
+          pt?.strat_pic_id === filterUser ||
+          Boolean(pt?.strat_pic_ids && pt.strat_pic_ids.includes(filterUser)) ||
+          pt?.design_pic_id === filterUser;
+      }
+    } else if (filterRole !== 'all') {
+      if (filterRole === 'MOTION_PIC') {
+        matchRoleAndUser = Boolean(mt.motion_pic_id);
+      } else if (filterRole === 'REQUESTER') {
+        matchRoleAndUser = Boolean(pt?.created_by);
+      } else if (filterRole === 'STRATEGIC_PIC') {
+        matchRoleAndUser = Boolean(pt?.strat_pic_id || (pt?.strat_pic_ids && pt.strat_pic_ids.length > 0) || pt?.requires_strategic_concept);
+      } else if (filterRole === 'DESIGNER') {
+        matchRoleAndUser = Boolean(pt?.design_pic_id);
+      } else if (filterRole === 'OPERATOR') {
+        matchRoleAndUser = Boolean(mt.operator_id);
+      }
+    }
+
+    return matchSearch && matchStatus && matchPic && matchClient && matchDate && matchRoleAndUser;
   });
 
   // Sorted list for active table view
@@ -646,6 +723,8 @@ function MotionPageContent() {
   const handleResetFilters = () => {
     setSearchQuery('');
     setFilterStatus('all');
+    setFilterRole('all');
+    setFilterUser('all');
     setFilterPic('all');
     setFilterClient('all');
     setFilterMonths([]);
@@ -758,7 +837,7 @@ function MotionPageContent() {
                 <div className="flex flex-wrap items-center bg-[var(--bg-secondary)] rounded-lg border border-[var(--border-primary)] shadow-sm">
                   
                   {/* Month Dropdown */}
-                  <div className="relative">
+                  <div className="relative" ref={monthDropdownRef}>
                     <button 
                       onClick={() => { setShowMonthDropdown(!showMonthDropdown); setShowYearDropdown(false); }}
                       className="px-3 py-2 h-[36px] flex items-center justify-between min-w-[120px] bg-transparent hover:bg-[var(--bg-tertiary)] rounded-l-lg transition-colors text-xs font-medium text-[var(--text-primary)]"
@@ -809,7 +888,7 @@ function MotionPageContent() {
                   <div className="w-px h-4 bg-[var(--border-primary)]" />
 
                   {/* Year Dropdown */}
-                  <div className="relative">
+                  <div className="relative" ref={yearDropdownRef}>
                     <button 
                       onClick={() => { setShowYearDropdown(!showYearDropdown); setShowMonthDropdown(false); }}
                       className="px-3 py-2 h-[36px] flex items-center justify-between min-w-[100px] bg-transparent hover:bg-[var(--bg-tertiary)] transition-colors text-xs font-medium text-[var(--text-primary)]"
@@ -888,16 +967,39 @@ function MotionPageContent() {
 
                   <div className="w-px h-4 bg-[var(--border-primary)]" />
 
-                  {/* Motion PIC Dropdown */}
+                  {/* Role Dropdown */}
+                  <div className="flex items-center">
+                    <select 
+                      className="px-3 py-1.5 h-[36px] text-xs bg-transparent border-none focus:outline-none min-w-[120px] hover:bg-[var(--bg-tertiary)] cursor-pointer text-[var(--text-primary)]" 
+                      value={filterRole} 
+                      onChange={(e) => {
+                        setFilterRole(e.target.value);
+                        setFilterUser('all');
+                      }}
+                    >
+                      <option value="all" className="bg-[var(--bg-secondary)]">Semua Role</option>
+                      <option value="MOTION_PIC" className="bg-[var(--bg-secondary)]">Motion PIC</option>
+                      <option value="REQUESTER" className="bg-[var(--bg-secondary)]">Requester</option>
+                      <option value="STRATEGIC_PIC" className="bg-[var(--bg-secondary)]">Strategic PIC</option>
+                      <option value="DESIGNER" className="bg-[var(--bg-secondary)]">Graphic Designer</option>
+                      <option value="OPERATOR" className="bg-[var(--bg-secondary)]">Operator</option>
+                    </select>
+                  </div>
+
+                  <div className="w-px h-4 bg-[var(--border-primary)]" />
+
+                  {/* Name / User Dropdown */}
                   <div className="flex items-center">
                     <select 
                       className="px-3 py-1.5 h-[36px] text-xs bg-transparent border-none focus:outline-none min-w-[130px] hover:bg-[var(--bg-tertiary)] cursor-pointer text-[var(--text-primary)]" 
-                      value={filterPic} 
-                      onChange={(e) => setFilterPic(e.target.value)}
+                      value={filterUser} 
+                      onChange={(e) => setFilterUser(e.target.value)}
                     >
-                      <option value="all" className="bg-[var(--bg-secondary)]">All Motion PIC</option>
-                      {uniquePics.map(pic => (
-                        <option key={pic as string} value={pic as string} className="bg-[var(--bg-secondary)]">{pic}</option>
+                      <option value="all" className="bg-[var(--bg-secondary)]">Semua Nama / PIC</option>
+                      {motionUserOptions.map(u => (
+                        <option key={u.id} value={u.id} className="bg-[var(--bg-secondary)]">
+                          {u.full_name} {filterRole === 'all' && u.role_name ? `(${u.role_name})` : ''}
+                        </option>
                       ))}
                     </select>
                   </div>
@@ -920,7 +1022,7 @@ function MotionPageContent() {
 
                 </div>
 
-                {(searchQuery || filterStatus !== 'all' || filterPic !== 'all' || filterClient !== 'all' || filterMonths.length > 0 || filterYears.length > 0 || filterExactDate) && (
+                {(searchQuery || filterStatus !== 'all' || filterRole !== 'all' || filterUser !== 'all' || filterPic !== 'all' || filterClient !== 'all' || filterMonths.length > 0 || filterYears.length > 0 || filterExactDate) && (
                   <button 
                     onClick={handleResetFilters} 
                     className="btn-ghost text-xs py-1.5 px-3 text-[var(--text-muted)] hover:text-red-400"
@@ -1864,7 +1966,11 @@ function MotionPageContent() {
       {/* ================= MODAL 4: SUBMIT OUTPUT RENDER MODAL ================= */}
       {showSubmitModal && (
         <SubmitMotionModal 
-          taskId={showSubmitModal} 
+          taskId={typeof showSubmitModal === 'string' ? showSubmitModal : showSubmitModal.taskId} 
+          targetAfterSubmit={typeof showSubmitModal === 'object' ? showSubmitModal?.targetAfterSubmit : null}
+          onRequestRevision={(mId) => {
+            setShowRevisionModal(mId);
+          }}
           onClose={() => { setShowSubmitModal(null); refresh(); }} 
           userId={user.id} 
         />
@@ -2843,7 +2949,19 @@ function AssignMotionPicModal({
 }
 
 // ===================== MODAL: SUBMIT MOTION RENDER =====================
-function SubmitMotionModal({ taskId, onClose, userId }: { taskId: string, onClose: () => void, userId: string }) {
+function SubmitMotionModal({ 
+  taskId, 
+  onClose, 
+  userId,
+  targetAfterSubmit,
+  onRequestRevision
+}: { 
+  taskId: string; 
+  onClose: () => void; 
+  userId: string;
+  targetAfterSubmit?: MotionStatus | null;
+  onRequestRevision?: (taskId: string) => void;
+}) {
   const [linkMotion, setLinkMotion] = useState('');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -2854,7 +2972,17 @@ function SubmitMotionModal({ taskId, onClose, userId }: { taskId: string, onClos
     setSubmitting(true);
     try {
       await submitMotionTask(taskId, linkMotion.trim(), notes, userId);
-      onClose();
+      if (targetAfterSubmit === 'APPROVED') {
+        await updateMotionStatus(taskId, 'APPROVED', userId);
+        onClose();
+      } else if (targetAfterSubmit === 'REVISION') {
+        onClose();
+        if (onRequestRevision) {
+          onRequestRevision(taskId);
+        }
+      } else {
+        onClose();
+      }
     } catch (err: any) {
       alert(`Gagal submit: ${err?.message || err}`);
     } finally {
@@ -2862,11 +2990,23 @@ function SubmitMotionModal({ taskId, onClose, userId }: { taskId: string, onClos
     }
   };
 
+  const titleText = targetAfterSubmit === 'APPROVED'
+    ? 'Submit Render & Approve Motion'
+    : targetAfterSubmit === 'REVISION'
+    ? 'Submit Render & Ajukan Revisi'
+    : 'Submit Motion Render';
+
+  const buttonText = targetAfterSubmit === 'APPROVED'
+    ? 'Submit & Approve'
+    : targetAfterSubmit === 'REVISION'
+    ? 'Submit & Lanjut Revisi'
+    : 'Submit Output';
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content max-w-md w-full" onClick={e => e.stopPropagation()}>
         <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border-primary)' }}>
-          <h2 className="text-lg font-bold text-[var(--text-primary)]">Submit Motion Render</h2>
+          <h2 className="text-lg font-bold text-[var(--text-primary)]">{titleText}</h2>
           <button onClick={onClose} className="btn-ghost p-1.5 rounded-full"><X className="w-5 h-5" /></button>
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
@@ -2881,7 +3021,7 @@ function SubmitMotionModal({ taskId, onClose, userId }: { taskId: string, onClos
           <div className="flex justify-end gap-3 pt-4" style={{ borderTop: '1px solid var(--border-primary)' }}>
             <button type="button" onClick={onClose} className="btn-secondary">Batal</button>
             <button type="submit" disabled={submitting} className="btn-primary" style={{ background: 'var(--accent-emerald)', borderColor: 'var(--accent-emerald)' }}>
-              {submitting ? 'Submitting...' : 'Submit Output'}
+              {submitting ? 'Submitting...' : buttonText}
             </button>
           </div>
         </form>

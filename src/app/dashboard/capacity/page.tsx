@@ -7,6 +7,7 @@ import {
   updateUserCapacity 
 } from '@/lib/supabase-store';
 import { useAuth } from '@/lib/auth';
+import { usePersistedState } from '@/lib/use-persistent-state';
 import {
   GlobalAnalyticsFilter,
   filterTasksByGlobalFilter,
@@ -51,10 +52,10 @@ export default function CapacityPage() {
   const [isLoading, setIsLoading] = useState(true);
 
   // Active Tab
-  const [activeTab, setActiveTab] = useState<AnalyticsTab>('OVERVIEW');
+  const [activeTab, setActiveTab] = usePersistedState<AnalyticsTab>('cmos_capacity_tab', 'OVERVIEW');
 
   // Global Filter State
-  const [filter, setFilter] = useState<GlobalAnalyticsFilter>({
+  const defaultCapacityFilter: GlobalAnalyticsFilter = {
     month: 'all',
     year: 'all',
     clientId: 'all',
@@ -64,10 +65,12 @@ export default function CapacityPage() {
     difficulty: 'all',
     operationalExcellence: 'all',
     status: 'all'
-  });
+  };
+
+  const [filter, setFilter] = usePersistedState<GlobalAnalyticsFilter>('cmos_capacity_filter', defaultCapacityFilter);
 
   // Filter applied state (for Apply / Reset)
-  const [appliedFilter, setAppliedFilter] = useState<GlobalAnalyticsFilter>({ ...filter });
+  const [appliedFilter, setAppliedFilter] = usePersistedState<GlobalAnalyticsFilter>('cmos_capacity_applied_filter', defaultCapacityFilter);
 
   // Modals
   const [drillDownData, setDrillDownData] = useState<{
@@ -107,6 +110,18 @@ export default function CapacityPage() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Keyboard shortcut to close modals with ESC
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setDrillDownData(null);
+        setShowCapacityModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Extract available years from task data
   const availableYears = useMemo(() => {

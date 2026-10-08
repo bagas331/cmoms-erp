@@ -6,6 +6,8 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 
 import { useAuth } from '@/lib/auth';
+import { usePersistedState } from '@/lib/use-persistent-state';
+import { useClickOutside } from '@/lib/use-click-outside';
 import { supabase } from '@/lib/supabase';
 import {
   getAllTasksWithRelations, getClients, getContentTypes, getUsers,
@@ -55,7 +57,13 @@ function TasksPageContent() {
   const tabParam = searchParams?.get('tab') as 'details' | 'chat' | null;
   const sectionParam = searchParams?.get('section') as 'active' | 'archive' | null;
 
-  const [mainTab, setMainTab] = useState<'active' | 'archive'>(sectionParam === 'archive' ? 'archive' : 'active');
+  const [mainTab, setMainTab] = usePersistedState<'active' | 'archive'>('cmos_tasks_main_tab', sectionParam === 'archive' ? 'archive' : 'active');
+
+  useEffect(() => {
+    if (sectionParam === 'archive' || sectionParam === 'active') {
+      setMainTab(sectionParam);
+    }
+  }, [sectionParam, setMainTab]);
 
   const [tasks, setTasks] = useState<TaskWithRelations[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -64,27 +72,35 @@ function TasksPageContent() {
   const [isLoading, setIsLoading] = useState(true);
 
   // Active Pipeline Filters
-  const [viewMode, setViewMode] = useState<ViewMode>('kanban');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterStatus, setFilterStatus] = useState<string>('all');
-  const [filterPic, setFilterPic] = useState<string>('all');
-  const [filterMonths, setFilterMonths] = useState<string[]>([]);
-  const [filterYears, setFilterYears] = useState<string[]>([]);
+  const [viewMode, setViewMode] = usePersistedState<ViewMode>('cmos_tasks_view_mode', 'kanban');
+  const [searchQuery, setSearchQuery] = usePersistedState<string>('cmos_tasks_search', '');
+  const [filterStatus, setFilterStatus] = usePersistedState<string>('cmos_tasks_filter_status', 'all');
+  const [filterPic, setFilterPic] = usePersistedState<string>('cmos_tasks_filter_pic', 'all');
+  const [filterRole, setFilterRole] = usePersistedState<string>('cmos_tasks_filter_role', 'all');
+  const [filterUser, setFilterUser] = usePersistedState<string>('cmos_tasks_filter_user', 'all');
+  const [filterMonths, setFilterMonths] = usePersistedState<string[]>('cmos_tasks_filter_months', []);
+  const [filterYears, setFilterYears] = usePersistedState<string[]>('cmos_tasks_filter_years', []);
   const [showMonthDropdown, setShowMonthDropdown] = useState(false);
   const [showYearDropdown, setShowYearDropdown] = useState(false);
-  const [filterExactDate, setFilterExactDate] = useState<string>('');
+  const [filterExactDate, setFilterExactDate] = usePersistedState<string>('cmos_tasks_filter_exact_date', '');
+
+  const monthDropdownRef = useRef<HTMLDivElement>(null);
+  const yearDropdownRef = useRef<HTMLDivElement>(null);
+
+  useClickOutside(monthDropdownRef, () => setShowMonthDropdown(false), showMonthDropdown);
+  useClickOutside(yearDropdownRef, () => setShowYearDropdown(false), showYearDropdown);
 
   // Approved Archive Filters, Period Navigation & View Mode
-  const [archiveViewMode, setArchiveViewMode] = useState<'kanban' | 'table'>('kanban');
-  const [archiveYear, setArchiveYear] = useState<string>(String(new Date().getFullYear()));
-  const [archiveMonth, setArchiveMonth] = useState<string>(String(new Date().getMonth() + 1));
-  const [archiveWeek, setArchiveWeek] = useState<string>('all');
-  const [archiveSearch, setArchiveSearch] = useState<string>('');
-  const [archiveRequester, setArchiveRequester] = useState<string>('all');
-  const [archivePic, setArchivePic] = useState<string>('all');
-  const [archiveSort, setArchiveSort] = useState<string>('approved_desc');
-  const [archivePage, setArchivePage] = useState<number>(1);
-  const [archiveLimit, setArchiveLimit] = useState<number>(15);
+  const [archiveViewMode, setArchiveViewMode] = usePersistedState<'kanban' | 'table'>('cmos_tasks_archive_view_mode', 'kanban');
+  const [archiveYear, setArchiveYear] = usePersistedState<string>('cmos_tasks_archive_year', String(new Date().getFullYear()));
+  const [archiveMonth, setArchiveMonth] = usePersistedState<string>('cmos_tasks_archive_month', String(new Date().getMonth() + 1));
+  const [archiveWeek, setArchiveWeek] = usePersistedState<string>('cmos_tasks_archive_week', 'all');
+  const [archiveSearch, setArchiveSearch] = usePersistedState<string>('cmos_tasks_archive_search', '');
+  const [archiveRequester, setArchiveRequester] = usePersistedState<string>('cmos_tasks_archive_requester', 'all');
+  const [archivePic, setArchivePic] = usePersistedState<string>('cmos_tasks_archive_pic', 'all');
+  const [archiveSort, setArchiveSort] = usePersistedState<string>('cmos_tasks_archive_sort', 'approved_desc');
+  const [archivePage, setArchivePage] = usePersistedState<number>('cmos_tasks_archive_page', 1);
+  const [archiveLimit, setArchiveLimit] = usePersistedState<number>('cmos_tasks_archive_limit', 15);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState<string | null>(null);
@@ -92,7 +108,7 @@ function TasksPageContent() {
   const [modalInitialTab, setModalInitialTab] = useState<'details' | 'chat'>('details');
   const [showAssignModal, setShowAssignModal] = useState<string | null>(null);
   const [showRevisionModal, setShowRevisionModal] = useState<{ taskId: string; stage: 'STRATEGIC' | 'DESIGN' } | null>(null);
-  const [showSubmitModal, setShowSubmitModal] = useState<string | null>(null);
+  const [showSubmitModal, setShowSubmitModal] = useState<{ taskId: string; targetAfterSubmit?: DesignStatus | null } | string | null>(null);
   const [showStratSubmitModal, setShowStratSubmitModal] = useState<string | null>(null);
 
   // Auto-open task modal and switch tab if taskId is provided in query params
@@ -105,6 +121,25 @@ function TasksPageContent() {
       }
     }
   }, [taskIdParam, tabParam, tasks]);
+
+  // Keyboard shortcut to close modals with ESC
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowCreateModal(false);
+        setShowEditModal(null);
+        setShowDetailModal(null);
+        setShowAssignModal(null);
+        setShowRevisionModal(null);
+        setShowSubmitModal(null);
+        setShowStratSubmitModal(null);
+        setShowMonthDropdown(false);
+        setShowYearDropdown(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Drag & Drop State
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
@@ -186,10 +221,18 @@ function TasksPageContent() {
           alert('Hanya desainer yang ditugaskan atau Lead yang dapat men-submit hasil desain.');
           return;
         }
-        setShowSubmitModal(task.id);
+        setShowSubmitModal({ taskId: task.id, targetAfterSubmit: null });
       } else if (targetStatus === 'DESIGN_REVISION') {
+        if (task.status_design !== 'DESIGN_SUBMITTED') {
+          setShowSubmitModal({ taskId: task.id, targetAfterSubmit: 'DESIGN_REVISION' });
+          return;
+        }
         setShowRevisionModal({ taskId: task.id, stage: 'DESIGN' });
       } else if (targetStatus === 'DESIGN_APPROVED') {
+        if (task.status_design !== 'DESIGN_SUBMITTED') {
+          setShowSubmitModal({ taskId: task.id, targetAfterSubmit: 'DESIGN_APPROVED' });
+          return;
+        }
         if (!['ADMIN', 'TEAM_LEAD', 'REQUESTER'].includes(user.role_name)) {
           alert('Hanya Requester, Team Lead, atau Admin yang dapat menyetujui desain.');
           return;
@@ -203,13 +246,25 @@ function TasksPageContent() {
         }
         await updateTaskStatus(task.id, 'STRAT_PENDING', user.id);
         refreshTasks();
+      } else if (targetStatus === 'TASK_CLOSED') {
+        if (!['ADMIN', 'TEAM_LEAD'].includes(user.role_name)) {
+          alert('Hanya Admin atau Team Lead yang dapat menutup tiket.');
+          return;
+        }
+        if (task.status_design !== 'DESIGN_APPROVED') {
+          alert('Hanya tiket yang sudah di-approve yang dapat di-close.');
+          return;
+        }
+        await updateTaskStatus(task.id, 'TASK_CLOSED', user.id);
+        refreshTasks();
       } else {
         await updateTaskStatus(task.id, targetStatus, user.id);
         refreshTasks();
       }
     } catch (err: any) {
       console.error('Error on drag & drop transition:', err);
-      alert(`Gagal mengubah status: ${err?.message || err}`);
+      const errMsg = err?.message || err?.details || (typeof err === 'object' ? JSON.stringify(err) : String(err));
+      alert(`Gagal mengubah status: ${errMsg}`);
     }
   };
 
@@ -258,12 +313,42 @@ function TasksPageContent() {
 
   const uniquePics = Array.from(new Set(tasks.filter(t => t.design_pic_name).map(t => t.design_pic_name))).sort();
 
+  const userOptions = useMemo(() => {
+    let list = allUsers;
+    if (filterRole === 'REQUESTER') {
+      list = allUsers.filter(u => u.role_name === 'REQUESTER');
+    } else if (filterRole === 'STRATEGIC_PIC') {
+      list = allUsers.filter(u => ['STRATEGIC_PIC', 'TEAM_LEAD'].includes(u.role_name));
+    } else if (filterRole === 'DESIGNER') {
+      list = allUsers.filter(u => ['DESIGNER', 'TEAM_LEAD'].includes(u.role_name));
+    }
+    return list;
+  }, [allUsers, filterRole]);
+
+  const handleResetFilters = () => {
+    setSearchQuery('');
+    setFilterStatus('all');
+    setFilterRole('all');
+    setFilterUser('all');
+    setFilterPic('all');
+    setFilterMonths([]);
+    setFilterYears([]);
+    setFilterExactDate('');
+  };
+
   const filteredTasks = tasks.filter(t => {
+    const creatorUser = allUsers.find(u => u.id === t.created_by);
+    const creatorName = creatorUser?.full_name || '';
+    const stratUser = allUsers.find(u => u.id === t.strat_pic_id);
+    const stratName = stratUser?.full_name || '';
+
     const matchSearch = searchQuery === '' ||
       (t.task_code || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       (t.client_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       (t.campaign_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (t.design_pic_name || '').toLowerCase().includes(searchQuery.toLowerCase());
+      (t.design_pic_name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      creatorName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      stratName.toLowerCase().includes(searchQuery.toLowerCase());
     const matchStatus = filterStatus === 'all' || t.status_design === filterStatus;
     
     // Date Filtering
@@ -283,7 +368,32 @@ function TasksPageContent() {
 
     const matchPic = filterPic === 'all' || t.design_pic_name === filterPic;
 
-    return matchSearch && matchStatus && matchDate && matchPic;
+    // Role & User Filtering
+    let matchRoleAndUser = true;
+    if (filterUser !== 'all') {
+      if (filterRole === 'REQUESTER') {
+        matchRoleAndUser = t.created_by === filterUser;
+      } else if (filterRole === 'STRATEGIC_PIC') {
+        matchRoleAndUser = t.strat_pic_id === filterUser || Boolean(t.strat_pic_ids && t.strat_pic_ids.includes(filterUser));
+      } else if (filterRole === 'DESIGNER') {
+        matchRoleAndUser = t.design_pic_id === filterUser;
+      } else {
+        matchRoleAndUser = t.created_by === filterUser || 
+          t.design_pic_id === filterUser || 
+          t.strat_pic_id === filterUser || 
+          Boolean(t.strat_pic_ids && t.strat_pic_ids.includes(filterUser));
+      }
+    } else if (filterRole !== 'all') {
+      if (filterRole === 'REQUESTER') {
+        matchRoleAndUser = Boolean(t.created_by);
+      } else if (filterRole === 'STRATEGIC_PIC') {
+        matchRoleAndUser = Boolean(t.strat_pic_id || (t.strat_pic_ids && t.strat_pic_ids.length > 0) || t.requires_strategic_concept);
+      } else if (filterRole === 'DESIGNER') {
+        matchRoleAndUser = Boolean(t.design_pic_id);
+      }
+    }
+
+    return matchSearch && matchStatus && matchDate && matchPic && matchRoleAndUser;
   });
 
   // 1. All Accessible Approved Tasks (Archive Base with RBAC)
@@ -623,7 +733,7 @@ function TasksPageContent() {
             <div className="flex flex-wrap items-center bg-[var(--bg-secondary)] rounded-lg border border-[var(--border-primary)] shadow-sm">
               
               {/* Month Dropdown */}
-              <div className="relative">
+              <div className="relative" ref={monthDropdownRef}>
                 <button 
                   onClick={() => { setShowMonthDropdown(!showMonthDropdown); setShowYearDropdown(false); }}
                   className="px-4 py-2 h-[38px] flex items-center justify-between min-w-[130px] bg-transparent hover:bg-[var(--bg-tertiary)] rounded-l-lg transition-colors focus:outline-none"
@@ -674,7 +784,7 @@ function TasksPageContent() {
               <div className="w-px h-5 bg-[var(--border-primary)]"></div>
 
               {/* Year Dropdown */}
-              <div className="relative">
+              <div className="relative" ref={yearDropdownRef}>
                 <button 
                   onClick={() => { setShowYearDropdown(!showYearDropdown); setShowMonthDropdown(false); }}
                   className="px-4 py-2 h-[38px] flex items-center justify-between min-w-[110px] bg-transparent hover:bg-[var(--bg-tertiary)] transition-colors focus:outline-none"
@@ -749,17 +859,51 @@ function TasksPageContent() {
 
               <div className="w-px h-5 bg-[var(--border-primary)]"></div>
 
-              {/* Designer Dropdown */}
+              {/* Role Dropdown */}
               <div className="flex items-center">
-                <select className="px-4 py-2 h-[38px] text-sm bg-transparent border-none focus:outline-none focus:ring-0 min-w-[140px] rounded-r-lg transition-all hover:bg-[var(--bg-tertiary)] cursor-pointer" value={filterPic} onChange={(e) => setFilterPic(e.target.value)}>
-                  <option value="all">All Designers</option>
-                  {uniquePics.map(pic => (
-                    <option key={pic as string} value={pic as string}>{pic}</option>
+                <select 
+                  className="px-4 py-2 h-[38px] text-sm bg-transparent border-none focus:outline-none focus:ring-0 min-w-[130px] transition-all hover:bg-[var(--bg-tertiary)] cursor-pointer" 
+                  value={filterRole} 
+                  onChange={(e) => {
+                    setFilterRole(e.target.value);
+                    setFilterUser('all');
+                  }}
+                >
+                  <option value="all">Semua Role</option>
+                  <option value="REQUESTER">Requester</option>
+                  <option value="STRATEGIC_PIC">Strategic PIC</option>
+                  <option value="DESIGNER">Graphic Designer</option>
+                </select>
+              </div>
+
+              <div className="w-px h-5 bg-[var(--border-primary)]"></div>
+
+              {/* Name / User Dropdown */}
+              <div className="flex items-center">
+                <select 
+                  className="px-4 py-2 h-[38px] text-sm bg-transparent border-none focus:outline-none focus:ring-0 min-w-[140px] rounded-r-lg transition-all hover:bg-[var(--bg-tertiary)] cursor-pointer" 
+                  value={filterUser} 
+                  onChange={(e) => setFilterUser(e.target.value)}
+                >
+                  <option value="all">Semua Nama / PIC</option>
+                  {userOptions.map(u => (
+                    <option key={u.id} value={u.id}>
+                      {u.full_name} {filterRole === 'all' && u.role_name ? `(${u.role_name})` : ''}
+                    </option>
                   ))}
                 </select>
               </div>
 
             </div>
+
+            {(searchQuery || filterStatus !== 'all' || filterRole !== 'all' || filterUser !== 'all' || filterPic !== 'all' || filterMonths.length > 0 || filterYears.length > 0 || filterExactDate) && (
+              <button 
+                onClick={handleResetFilters} 
+                className="btn-ghost text-xs py-1.5 px-3 text-[var(--text-muted)] hover:text-red-400 font-medium"
+              >
+                Reset Filter
+              </button>
+            )}
           </div>
 
           {/* Actions */}
@@ -1773,7 +1917,17 @@ function TasksPageContent() {
         />
       )}
       {/* SUBMIT MODAL */}
-      {showSubmitModal && <SubmitModal taskId={showSubmitModal} onClose={() => { setShowSubmitModal(null); refreshTasks(); }} userId={user.id} />}
+      {showSubmitModal && (
+        <SubmitModal 
+          taskId={typeof showSubmitModal === 'string' ? showSubmitModal : showSubmitModal.taskId} 
+          targetAfterSubmit={typeof showSubmitModal === 'object' ? showSubmitModal?.targetAfterSubmit : null}
+          onRequestRevision={(tId) => {
+            setShowRevisionModal({ taskId: tId, stage: 'DESIGN' });
+          }}
+          onClose={() => { setShowSubmitModal(null); refreshTasks(); }} 
+          userId={user.id} 
+        />
+      )}
       {/* STRATEGIC SUBMIT MODAL */}
       {showStratSubmitModal && <SubmitStratModal taskId={showStratSubmitModal} onClose={() => { setShowStratSubmitModal(null); refreshTasks(); }} userId={user.id} />}
     </div>
@@ -2223,7 +2377,19 @@ function SubmitStratModal({ taskId, onClose, userId }: { taskId: string; onClose
 }
 
 // ===================== SUBMIT MODAL =====================
-function SubmitModal({ taskId, onClose, userId }: { taskId: string; onClose: () => void; userId: string }) {
+function SubmitModal({ 
+  taskId, 
+  onClose, 
+  userId,
+  targetAfterSubmit,
+  onRequestRevision
+}: { 
+  taskId: string; 
+  onClose: () => void; 
+  userId: string;
+  targetAfterSubmit?: DesignStatus | null;
+  onRequestRevision?: (taskId: string) => void;
+}) {
   const [outputQty, setOutputQty] = useState(1);
   const [assetName, setAssetName] = useState('');
   const [assetLink, setAssetLink] = useState('');
@@ -2234,7 +2400,18 @@ function SubmitModal({ taskId, onClose, userId }: { taskId: string; onClose: () 
     setSubmitting(true);
     try {
       await submitTask(taskId, { output_qty: outputQty, final_asset_name: assetName, final_asset_link: assetLink }, userId);
-      onClose();
+      
+      if (targetAfterSubmit === 'DESIGN_APPROVED') {
+        await updateTaskStatus(taskId, 'DESIGN_APPROVED', userId);
+        onClose();
+      } else if (targetAfterSubmit === 'DESIGN_REVISION') {
+        onClose();
+        if (onRequestRevision) {
+          onRequestRevision(taskId);
+        }
+      } else {
+        onClose();
+      }
     } catch (err: any) {
       console.error('Error submitting task:', err);
       const errMsg = err?.message || err?.details || err?.error_description || (typeof err === 'object' ? JSON.stringify(err) : String(err));
@@ -2244,11 +2421,23 @@ function SubmitModal({ taskId, onClose, userId }: { taskId: string; onClose: () 
     }
   };
 
+  const titleText = targetAfterSubmit === 'DESIGN_APPROVED'
+    ? 'Submit Design & Approve'
+    : targetAfterSubmit === 'DESIGN_REVISION'
+    ? 'Submit Design & Ajukan Revisi'
+    : 'Submit Design';
+
+  const buttonText = targetAfterSubmit === 'DESIGN_APPROVED'
+    ? 'Submit & Approve'
+    : targetAfterSubmit === 'DESIGN_REVISION'
+    ? 'Submit & Lanjut Revisi'
+    : 'Submit Output';
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="modal-overlay" onClick={onClose}>
       <div className="modal-content max-w-md" onClick={e => e.stopPropagation()}>
         <div className="p-5 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border-primary)' }}>
-          <h2 className="text-lg font-bold text-[var(--text-primary)]">Submit Design</h2>
+          <h2 className="text-lg font-bold text-[var(--text-primary)]">{titleText}</h2>
           <button onClick={onClose} className="btn-ghost p-1"><X className="w-5 h-5" /></button>
         </div>
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
@@ -2270,7 +2459,7 @@ function SubmitModal({ taskId, onClose, userId }: { taskId: string; onClose: () 
           <div className="flex justify-end gap-3">
             <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
             <button type="submit" className="btn-primary" disabled={submitting}>
-              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Submit
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} {buttonText}
             </button>
           </div>
         </form>

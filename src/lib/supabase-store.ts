@@ -161,8 +161,11 @@ export async function getMotionTasks(): Promise<MotionTask[]> {
         if (!error && data && data.length > 0) {
           return (data || []).map((m: any) => {
             const rawLink = m.final_video_link || m.link_motion || null;
+            const isApprovedOrCompleted = m.status_motion === 'APPROVED' || m.status_motion === 'COMPLETED';
+            const resolvedApprovedAt = m.approved_at || (isApprovedOrCompleted ? (m.submission_date ? `${m.submission_date}T00:00:00Z` : m.updated_at || m.created_at) : null);
             return {
               ...m,
+              approved_at: resolvedApprovedAt,
               link_motion: rawLink ? sanitizeUrl(rawLink) : null,
               final_video_link: m.final_video_link ? sanitizeUrl(m.final_video_link) : null,
               motion_difficulty: m.motion_difficulty || 'LVL_1_SIMPLE',
@@ -1351,10 +1354,6 @@ export async function updateTaskStatus(taskId: string, newStatus: DesignStatus, 
     }
   }
 
-  if (newStatus === 'DESIGN_APPROVED') {
-    updates.approved_at = new Date().toISOString();
-  }
-
   const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
   if (error) throw error;
 
@@ -2350,9 +2349,6 @@ export async function updateMotionStatus(motionTaskId: string, status: MotionSta
     status_motion: status,
     updated_at: new Date().toISOString()
   };
-  if ((status === 'APPROVED' || status === 'COMPLETED') && !currentMotion?.approved_at) {
-    updatePayload.approved_at = new Date().toISOString();
-  }
 
   const { error } = await supabase.from('motion_tasks').update(updatePayload).eq('id', motionTaskId);
   if (error) throw error;

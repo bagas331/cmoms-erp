@@ -6,6 +6,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { User } from './types';
 import { safeJsonParse } from './utils';
+import { clearPersistedFilterState } from './use-persistent-state';
 
 interface AuthContextType {
   user: User | null;
@@ -32,13 +33,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     try {
       const storedUser = localStorage.getItem('cmoms_current_user');
+      const lastUserId = localStorage.getItem('cmoms_last_user_id');
       if (storedUser) {
         const parsed = safeJsonParse<User | null>(storedUser, null);
         if (parsed && parsed.id && parsed.email) {
+          if (lastUserId && lastUserId !== parsed.id) {
+            clearPersistedFilterState();
+          }
+          localStorage.setItem('cmoms_last_user_id', parsed.id);
           setUser(parsed);
         } else {
+          clearPersistedFilterState();
           localStorage.removeItem('cmoms_current_user');
+          localStorage.removeItem('cmoms_last_user_id');
         }
+      } else {
+        clearPersistedFilterState();
+        localStorage.removeItem('cmoms_last_user_id');
       }
     } catch {
       // ignore
@@ -58,8 +69,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (res.ok) {
         const result = await res.json();
         if (result.success && result.user) {
+          clearPersistedFilterState();
           setUser(result.user);
           localStorage.setItem('cmoms_current_user', JSON.stringify(result.user));
+          localStorage.setItem('cmoms_last_user_id', result.user.id);
           return true;
         }
       }
@@ -82,8 +95,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       );
       if (matched) {
         const { password_hash, ...safeUser } = matched;
+        clearPersistedFilterState();
         setUser(safeUser as User);
         localStorage.setItem('cmoms_current_user', JSON.stringify(safeUser));
+        localStorage.setItem('cmoms_last_user_id', safeUser.id);
         return true;
       }
     } catch (fallbackErr) {
@@ -93,14 +108,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    clearPersistedFilterState();
     setUser(null);
     localStorage.removeItem('cmoms_current_user');
+    localStorage.removeItem('cmoms_last_user_id');
   }, []);
 
   const updateCurrentUser = useCallback((updatedUser: User) => {
     setUser(updatedUser);
     try {
       localStorage.setItem('cmoms_current_user', JSON.stringify(updatedUser));
+      localStorage.setItem('cmoms_last_user_id', updatedUser.id);
     } catch (err) {
       console.error("Failed to update stored user:", err);
     }

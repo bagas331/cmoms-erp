@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 
 import { useAuth } from '@/lib/auth';
+import { usePersistedState } from '@/lib/use-persistent-state';
 import { getDashboardStats, getAllTasksWithRelations, getDesignerWorkloads } from '@/lib/supabase-store';
 import { DESIGN_STATUS_COLORS, DESIGN_STATUS_LABELS, EXCELLENCE_COLORS, EXCELLENCE_LABELS } from '@/lib/constants';
 import { formatDisplayDate, getMonthName, getInitials } from '@/lib/utils';
@@ -22,8 +23,8 @@ export default function DashboardPage() {
   const [slaBreakdown, setSlaBreakdown] = useState<Record<OperationalExcellence, number>>({ EXCELLENCE: 0, GOOD: 0, BAD: 0 });
   const [allTasksRaw, setAllTasksRaw] = useState<TaskWithRelations[]>([]);
 
-  const [filterMonth, setFilterMonth] = useState<string>('all');
-  const [filterYear, setFilterYear] = useState<string>('all');
+  const [filterMonth, setFilterMonth] = usePersistedState<string>('cmos_overview_filter_month', 'all');
+  const [filterYear, setFilterYear] = usePersistedState<string>('cmos_overview_filter_year', 'all');
 
   const loadData = useCallback(async () => {
     try {

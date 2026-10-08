@@ -592,6 +592,12 @@ html.dark select option:checked {
   left: 0;
   z-index: 40;
   overflow-y: auto;
+  overflow-x: hidden;
+  transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.sidebar.collapsed {
+  width: 68px;
 }
 
 .sidebar-link {
@@ -604,8 +610,16 @@ html.dark select option:checked {
   font-size: 13px;
   font-weight: 500;
   text-decoration: none;
-  transition: all 0.1s ease;
+  transition: all 0.12s ease;
   margin: 1px 8px;
+  white-space: nowrap;
+}
+
+.sidebar.collapsed .sidebar-link {
+  justify-content: center;
+  padding: 8px 0;
+  margin: 2px 8px;
+  gap: 0;
 }
 
 .sidebar-link:hover {
@@ -635,13 +649,17 @@ html.dark select option:checked {
   left: 0;
   right: 0;
   z-index: 30;
+  transition: left 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @media (min-width: 1024px) {
   .topbar {
     left: 248px;
-    padding: 0 24px;
+    padding: 0 20px;
     height: 52px;
+  }
+  .topbar.sidebar-collapsed {
+    left: 68px;
   }
 }
 
@@ -653,6 +671,7 @@ html.dark select option:checked {
   margin-top: 52px;
   padding: 16px;
   min-height: calc(100vh - 52px);
+  transition: margin-left 0.22s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @media (min-width: 1024px) {
@@ -661,6 +680,9 @@ html.dark select option:checked {
     margin-top: 52px;
     padding: 24px;
     min-height: calc(100vh - 52px);
+  }
+  .main-content.sidebar-collapsed {
+    margin-left: 68px;
   }
 }
 

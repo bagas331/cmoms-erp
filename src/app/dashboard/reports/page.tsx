@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { usePersistedState } from '@/lib/use-persistent-state';
 import { getTasks, getClients, getUsers, getMotionTasks } from '@/lib/supabase-store';
 import { EXCELLENCE_COLORS, EXCELLENCE_LABELS, SOURCE_LABELS } from '@/lib/constants';
 import { CreativeTask, MotionTask, OperationalExcellence, Client, User } from '@/lib/types';
@@ -14,9 +15,9 @@ export default function ReportsPage() {
   const [clients, setClients] = useState<Client[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   
-  const [filterMonth, setFilterMonth] = useState<string>('all');
-  const [filterYear, setFilterYear] = useState<string>('all');
-  const [activeTab, setActiveTab] = useState<'GRAPHIC' | 'MOTION'>('GRAPHIC');
+  const [filterMonth, setFilterMonth] = usePersistedState<string>('cmos_reports_filter_month', 'all');
+  const [filterYear, setFilterYear] = usePersistedState<string>('cmos_reports_filter_year', 'all');
+  const [activeTab, setActiveTab] = usePersistedState<'GRAPHIC' | 'MOTION'>('cmos_reports_tab', 'GRAPHIC');
 
   useEffect(() => { 
     Promise.all([getTasks(), getMotionTasks(), getClients(), getUsers()]).then(([t, m, c, u]) => {
