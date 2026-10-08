@@ -7,13 +7,13 @@ import { generateUUID } from './utils';
 
 // --- ROLES ---
 export const SEED_ROLES: Role[] = [
-  { id: 1, name: 'ADMIN', label: 'Admin', description: 'System Administrator - Full access to all modules', created_at: '2026-01-01T00:00:00Z' },
-  { id: 2, name: 'TEAM_LEAD', label: 'Team Lead', description: 'Creative Director / Team Lead - Triage, assign, approve', created_at: '2026-01-01T00:00:00Z' },
-  { id: 3, name: 'STRATEGIC_PIC', label: 'Strategic PIC', description: 'Strategic Planner - Brief & concept development', created_at: '2026-01-01T00:00:00Z' },
-  { id: 4, name: 'DESIGNER', label: 'Graphic Designer', description: 'Graphic Designer - Design production', created_at: '2026-01-01T00:00:00Z' },
-  { id: 5, name: 'MOTION_PIC', label: 'Motion Designer', description: 'Motion Graphics Designer - Animation production', created_at: '2026-01-01T00:00:00Z' },
-  { id: 6, name: 'REQUESTER', label: 'Requester', description: 'Account Executive / Requester - Submit requests', created_at: '2026-01-01T00:00:00Z' },
-  { id: 7, name: 'OPERATOR', label: 'Operator', description: 'Live Stream Operator - Broadcast execution', created_at: '2026-01-01T00:00:00Z' },
+  { id: 1, name: 'ADMIN', label: 'Admin', description: 'System Administrator - Full access to all modules & master data', created_at: '2026-01-01T00:00:00Z' },
+  { id: 2, name: 'TEAM_LEAD', label: 'Team Lead', description: 'Creative Director / Team Lead - Triage, assign, approve & team capacity', created_at: '2026-01-01T00:00:00Z' },
+  { id: 3, name: 'STRATEGIC_PIC', label: 'Strategic (Creative Strategic)', description: 'Creative Strategic - Visual concept, illustration ideas & brand checklist', created_at: '2026-01-01T00:00:00Z' },
+  { id: 4, name: 'DESIGNER', label: 'GD (Graphic Designer)', description: 'Graphic Designer - Design production, concept review & asset handover', created_at: '2026-01-01T00:00:00Z' },
+  { id: 5, name: 'MOTION_PIC', label: 'Motion (Motion Designer)', description: 'Motion Designer - Animation production, preview links & OP handover', created_at: '2026-01-01T00:00:00Z' },
+  { id: 6, name: 'REQUESTER', label: 'AE (Account Executive)', description: 'Account Executive - Brief creation, client liaison & approval follow-up', created_at: '2026-01-01T00:00:00Z' },
+  { id: 7, name: 'OPERATOR', label: 'OP (Operator)', description: 'Live Stream Operator - Last checkpoint & live broadcast execution', created_at: '2026-01-01T00:00:00Z' },
 ];
 
 // --- USERS ---

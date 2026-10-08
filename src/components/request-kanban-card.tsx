@@ -298,20 +298,20 @@ export function RequestKanbanCard({
         </div>
 
         {/* ============================================================
-            LEVEL 3: PEOPLE SECTION (Requester & Design PIC)
+            LEVEL 3: PEOPLE SECTION (AE, Strategic & GD PIC)
             ============================================================ */}
         <div className="pt-2.5 border-t border-[var(--border-secondary)] space-y-1.5">
-          {/* Requester */}
+          {/* AE (Requester) */}
           <div className="flex items-center justify-between text-xs">
             <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)]">
-              Requester
+              AE
             </span>
             <div className="flex items-center gap-1.5 truncate max-w-[150px]">
               <div className="w-4 h-4 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] flex items-center justify-center text-[8px] font-bold text-[var(--text-secondary)] shrink-0">
-                {getInitials(task.created_by_name || 'R')}
+                {getInitials(task.created_by_name || 'AE')}
               </div>
               <span className="text-xs font-medium text-[var(--text-secondary)] truncate">
-                {task.created_by_name || 'Requester'}
+                {task.created_by_name || 'AE'}
               </span>
             </div>
           </div>
@@ -320,7 +320,7 @@ export function RequestKanbanCard({
           {task.requires_strategic_concept && (
             <div className="flex items-center justify-between text-xs">
               <span className="text-[9px] uppercase tracking-wider font-bold text-purple-400">
-                Strat PIC
+                Strategic
               </span>
               <div className="flex items-center gap-1.5 truncate max-w-[150px]">
                 <div className="w-4 h-4 rounded-full bg-purple-500/20 text-purple-400 border border-purple-500/30 flex items-center justify-center text-[8px] font-bold shrink-0">
@@ -333,10 +333,10 @@ export function RequestKanbanCard({
             </div>
           )}
 
-          {/* Design PIC */}
+          {/* GD PIC */}
           <div className="flex items-center justify-between text-xs">
             <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)]">
-              Design PIC
+              GD PIC
             </span>
             <div className="flex items-center gap-1.5 truncate max-w-[150px]">
               {task.design_pic_name ? (

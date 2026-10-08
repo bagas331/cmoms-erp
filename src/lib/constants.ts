@@ -118,21 +118,21 @@ export const REASON_LABELS: Record<ReasonCategory, string> = {
 export const ROLE_LABELS: Record<RoleName, string> = {
   ADMIN: 'Admin',
   TEAM_LEAD: 'Team Lead',
-  STRATEGIC_PIC: 'Strategic PIC',
-  DESIGNER: 'Graphic Designer',
-  MOTION_PIC: 'Motion Designer',
-  REQUESTER: 'Requester',
-  OPERATOR: 'Operator',
+  STRATEGIC_PIC: 'Strategic (Creative Strategic)',
+  DESIGNER: 'GD (Graphic Designer)',
+  MOTION_PIC: 'Motion (Motion Designer)',
+  REQUESTER: 'AE (Account Executive)',
+  OPERATOR: 'OP (Operator)',
 };
 
 export const ROLE_DESCRIPTIONS: Record<RoleName, string> = {
-  ADMIN: 'System Administrator: Akses penuh ke seluruh konfigurasi sistem, data master, manajemen user & audit.',
-  TEAM_LEAD: 'Creative Director / Team Lead: Triage brief, assign tugas, review & approval, serta manajemen tim.',
-  STRATEGIC_PIC: 'Strategic Planner: Formulasi konsep strategis, review brief, dan perencanaan kampanye kreatif.',
-  DESIGNER: 'Graphic Designer: Produksi aset grafis statis dan pengajuan deliverable visual desain.',
-  MOTION_PIC: 'Motion Designer: Produksi animasi grafis 2D/3D, video motion, dan rendering output.',
-  REQUESTER: 'Requester / Account Executive: Pembuatan request brief kreatif, peninjauan hasil & request revisi.',
-  OPERATOR: 'Live Stream Operator: Penyiapan aset broadcast & streaming, serta operasional serah terima.',
+  ADMIN: 'System Administrator: Akses penuh ke konfigurasi sistem, master data, manajemen user & audit log.',
+  TEAM_LEAD: 'Creative Director / Team Lead: Triage brief, assign tugas, review & approval kualitas, serta manajemen beban tim.',
+  STRATEGIC_PIC: 'Strategic (Creative Strategic): Mengembangkan konsep visual, ideasi ilustrasi, mockup background (2 periode / 2 opsi), dan tagging AE.',
+  DESIGNER: 'GD (Graphic Designer): Quality check konsep bersama OP, produksi desain grafis statis, penyerahan aset ke Motion, dan piket campaign (DD/PD).',
+  MOTION_PIC: 'Motion (Motion Designer): Produksi animasi & motion graphic, kompilasi link preview harian (cut-off 13.00 & 17.00), dan serah terima ke OP.',
+  REQUESTER: 'AE (Account Executive): Inisiasi brief & Trello card tgl 20, follow-up promo brand tgl 27, submit hasil ke Brand, dan update approval tim.',
+  OPERATOR: 'OP (Operator / Tim Live): Quality check awal konsep bersama GD, Operator Last Checkpoint (pukul 23.00), dan operasional live streaming.',
 };
 
 export const ROLE_COLORS: Record<RoleName, string> = {

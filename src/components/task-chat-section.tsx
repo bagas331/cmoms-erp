@@ -132,10 +132,11 @@ export function TaskChatSection({
     switch (roleName) {
       case 'ADMIN': return { bg: 'rgba(168, 85, 247, 0.12)', text: '#a855f7', border: 'rgba(168, 85, 247, 0.25)', label: 'Admin' };
       case 'TEAM_LEAD': return { bg: 'rgba(245, 158, 11, 0.12)', text: '#f59e0b', border: 'rgba(245, 158, 11, 0.25)', label: 'Team Lead' };
-      case 'STRATEGIC_PIC': return { bg: 'rgba(59, 130, 246, 0.12)', text: '#3b82f6', border: 'rgba(59, 130, 246, 0.25)', label: 'Strategic PIC' };
-      case 'DESIGNER': return { bg: 'rgba(16, 185, 129, 0.12)', text: '#10b981', border: 'rgba(16, 185, 129, 0.25)', label: 'Designer' };
-      case 'MOTION_PIC': return { bg: 'rgba(236, 72, 153, 0.12)', text: '#ec4899', border: 'rgba(236, 72, 153, 0.25)', label: 'Motion PIC' };
-      case 'REQUESTER': return { bg: 'rgba(99, 102, 241, 0.12)', text: '#6366f1', border: 'rgba(99, 102, 241, 0.25)', label: 'Requester' };
+      case 'STRATEGIC_PIC': return { bg: 'rgba(59, 130, 246, 0.12)', text: '#3b82f6', border: 'rgba(59, 130, 246, 0.25)', label: 'Strategic' };
+      case 'DESIGNER': return { bg: 'rgba(16, 185, 129, 0.12)', text: '#10b981', border: 'rgba(16, 185, 129, 0.25)', label: 'GD' };
+      case 'MOTION_PIC': return { bg: 'rgba(236, 72, 153, 0.12)', text: '#ec4899', border: 'rgba(236, 72, 153, 0.25)', label: 'Motion' };
+      case 'REQUESTER': return { bg: 'rgba(99, 102, 241, 0.12)', text: '#6366f1', border: 'rgba(99, 102, 241, 0.25)', label: 'AE' };
+      case 'OPERATOR': return { bg: 'rgba(100, 116, 139, 0.12)', text: '#64748b', border: 'rgba(100, 116, 139, 0.25)', label: 'OP' };
       default: return { bg: 'rgba(100, 116, 139, 0.12)', text: '#64748b', border: 'rgba(100, 116, 139, 0.25)', label: roleName || 'Member' };
     }
   };
@@ -486,12 +487,12 @@ export function TaskChatSection({
               </span>
             </div>
             <p className="text-[11px] text-[var(--text-muted)] m-0 flex items-center gap-1.5 flex-wrap">
-              <span>Peserta: Requester ({task.created_by_name || 'Requester'})</span>
-              {task.design_pic_name && <span>• Designer ({task.design_pic_name})</span>}
+              <span>Peserta: AE ({task.created_by_name || 'AE'})</span>
+              {task.design_pic_name && <span>• GD ({task.design_pic_name})</span>}
               {task.strat_pic_names && task.strat_pic_names.length > 0 ? (
-                <span>• Strat PIC ({task.strat_pic_names.join(', ')})</span>
+                <span>• Strategic ({task.strat_pic_names.join(', ')})</span>
               ) : task.strat_pic_name ? (
-                <span>• Strat PIC ({task.strat_pic_name})</span>
+                <span>• Strategic ({task.strat_pic_name})</span>
               ) : null}
               {task.motion_pic_name && <span>• Motion ({task.motion_pic_name})</span>}
             </p>

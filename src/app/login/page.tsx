@@ -9,10 +9,11 @@ import Link from 'next/link';
 const QUICK_LOGIN = [
   { email: 'admin@orbiz.id', pass: 'admin123', role: 'Admin', desc: 'Full system access' },
   { email: 'alfie@orbiz.id', pass: 'alfie123', role: 'Team Lead', desc: 'Triage & assign tasks' },
-  { email: 'nadya@orbiz.id', pass: 'nadya123', role: 'Designer', desc: 'Design production' },
-  { email: 'jova@orbiz.id', pass: 'jova123', role: 'Motion PIC', desc: 'Motion graphics' },
-  { email: 'ira@orbiz.id', pass: 'ira123', role: 'Strategic PIC', desc: 'Brief & concept' },
-  { email: 'sarah@orbiz.id', pass: 'sarah123', role: 'Requester', desc: 'Submit requests' },
+  { email: 'ira@orbiz.id', pass: 'ira123', role: 'Strategic', desc: 'Concept & visual brief' },
+  { email: 'nadya@orbiz.id', pass: 'nadya123', role: 'GD', desc: 'Design production & QA' },
+  { email: 'jova@orbiz.id', pass: 'jova123', role: 'Motion', desc: 'Motion graphics & render' },
+  { email: 'sarah@orbiz.id', pass: 'sarah123', role: 'AE', desc: 'Brief & client liaison' },
+  { email: 'sam@orbiz.id', pass: 'sam123', role: 'OP', desc: 'Live checkpoint & stream' },
 ];
 
 export default function LoginPage() {

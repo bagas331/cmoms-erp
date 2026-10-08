@@ -323,20 +323,20 @@ export function MotionKanbanCard({
         </div>
 
         {/* ============================================================
-            LEVEL 3: PEOPLE SECTION (Requester & Motion PIC)
+            LEVEL 3: PEOPLE SECTION (AE & Motion PIC)
             ============================================================ */}
         <div className="pt-2.5 border-t border-[var(--border-secondary)] space-y-1.5">
-          {/* Requester */}
+          {/* AE (Requester) */}
           <div className="flex items-center justify-between text-xs">
             <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)]">
-              Requester
+              AE
             </span>
             <div className="flex items-center gap-1.5 truncate max-w-[150px]">
               <div className="w-4 h-4 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] flex items-center justify-center text-[8px] font-bold text-[var(--text-secondary)] shrink-0">
-                {getInitials(mt.parentTask?.created_by_name || 'Creative Team')}
+                {getInitials(mt.parentTask?.created_by_name || 'AE')}
               </div>
               <span className="text-xs font-medium text-[var(--text-secondary)] truncate">
-                {mt.parentTask?.created_by_name || 'Creative Team'}
+                {mt.parentTask?.created_by_name || 'AE'}
               </span>
             </div>
           </div>
