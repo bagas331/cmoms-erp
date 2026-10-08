@@ -554,9 +554,6 @@ function TasksPageContent() {
           <h1 className="text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2">
             <span>Mockup & Request Pipeline</span>
           </h1>
-          <p className="text-xs text-[var(--text-muted)] mt-0.5">
-            Kelola permintaan mockup aktif dan telusuri arsip historical request yang telah disetujui
-          </p>
         </div>
 
         {/* Section Switcher Navigation */}

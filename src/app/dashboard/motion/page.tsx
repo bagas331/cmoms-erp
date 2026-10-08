@@ -663,9 +663,6 @@ function MotionPageContent() {
           <h1 className="text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2">
             <span>Motion Graphics Pipeline</span>
           </h1>
-          <p className="text-xs text-[var(--text-muted)] mt-0.5">
-            Kelola antrean pengerjaan motion graphics aktif dan telusuri arsip video/render yang telah disetujui
-          </p>
         </div>
 
         {/* Section Switcher Navigation */}
