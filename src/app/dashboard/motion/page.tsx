@@ -17,8 +17,7 @@ import {
   deleteMotionTask, 
   getComments, 
   addComment, 
-  deleteComment, 
-  getAuditLogs
+  deleteComment
 } from '@/lib/supabase-store';
 import { TaskChatSection } from '@/components/task-chat-section';
 import { MotionKanbanCard } from '@/components/motion-kanban-card';
@@ -47,7 +46,6 @@ import {
   Client, 
   MotionDifficulty, 
   TaskComment, 
-  AuditLog, 
   ReasonCategory 
 } from '@/lib/types';
 import { useAuth } from '@/lib/auth';
@@ -112,7 +110,7 @@ function MotionPageContent() {
   const { user } = useAuth();
   const searchParams = useSearchParams();
   const taskIdParam = searchParams?.get('taskId') || searchParams?.get('requestId');
-  const tabParam = searchParams?.get('tab') as 'details' | 'chat' | 'audit' | null;
+  const tabParam = searchParams?.get('tab') as 'details' | 'chat' | null;
 
   const [motionTasks, setMotionTasks] = useState<EnrichedMotionTask[]>([]);
   const [allUsers, setAllUsers] = useState<UserType[]>([]);
@@ -126,7 +124,7 @@ function MotionPageContent() {
   // Modal States
   const [showAssign, setShowAssign] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState<EnrichedMotionTask | null>(null);
-  const [detailInitialTab, setDetailInitialTab] = useState<'details' | 'chat' | 'audit'>('details');
+  const [detailInitialTab, setDetailInitialTab] = useState<'details' | 'chat'>('details');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState<string | null>(null);
   const [showSubmitModal, setShowSubmitModal] = useState<string | null>(null);
@@ -144,7 +142,7 @@ function MotionPageContent() {
       );
       if (matched) {
         setShowDetail(matched);
-        setDetailInitialTab(tabParam === 'chat' ? 'chat' : tabParam === 'audit' ? 'audit' : 'details');
+        setDetailInitialTab(tabParam === 'chat' ? 'chat' : 'details');
       }
     }
   }, [taskIdParam, tabParam, motionTasks]);
@@ -1913,7 +1911,7 @@ function MotionDetailModal({
   user: UserType;
   allUsers: UserType[];
   allClients: Client[];
-  initialTab?: 'details' | 'chat' | 'audit';
+  initialTab?: 'details' | 'chat';
   onClose: () => void;
   onRefresh: () => void;
   onAssign: () => void;
@@ -1922,10 +1920,9 @@ function MotionDetailModal({
   onHandover: () => void;
   onEdit: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<'details' | 'chat' | 'audit'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'details' | 'chat'>(initialTab);
   const [commentCount, setCommentCount] = useState<number>(0);
   const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
 
   useEffect(() => {
     if (initialTab) {
@@ -1936,20 +1933,6 @@ function MotionDetailModal({
   const canEdit = ['ADMIN', 'TEAM_LEAD'].includes(user.role_name) || !motionTask.parentTask;
   const clientName = motionTask.parentTask?.client_name || allClients.find(c => c.id === motionTask.client_id)?.name || 'Unknown Client';
   const picUser = allUsers.find(u => u.id === motionTask.motion_pic_id);
-
-  // Load audit logs
-  useEffect(() => {
-    const fetchLogs = async () => {
-      try {
-        const logs = await getAuditLogs();
-        const relevant = logs.filter(l => l.entity_id === motionTask.id || (motionTask.task_id && l.entity_id === motionTask.task_id));
-        setAuditLogs(relevant);
-      } catch (err) {
-        console.error('Failed to load audit logs:', err);
-      }
-    };
-    fetchLogs();
-  }, [motionTask.id, motionTask.task_id]);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="modal-overlay" onClick={onClose} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', zIndex: 999 }}>
@@ -2028,26 +2011,6 @@ function MotionDetailModal({
             )}
             {unreadChatCount > 0 && (
               <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" title={`${unreadChatCount} pesan belum dibaca`} />
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('audit')}
-            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-2 ${
-              activeTab === 'audit'
-                ? 'bg-pink-600 text-white shadow-sm'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
-            }`}
-          >
-            <Clock className="w-3.5 h-3.5" />
-            Audit Trail
-            {auditLogs.length > 0 && (
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                activeTab === 'audit' ? 'bg-white/25 text-white' : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
-              }`}>
-                {auditLogs.length}
-              </span>
             )}
           </button>
         </div>
@@ -2212,37 +2175,6 @@ function MotionDetailModal({
                 setUnreadChatCount(unread);
               }}
             />
-          )}
-
-          {/* ================= TAB 3: AUDIT TRAIL ================= */}
-          {activeTab === 'audit' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">Riwayat Aktivitas &amp; Log Perubahan</span>
-                <span className="text-xs text-[var(--text-muted)]">{auditLogs.length} event tercatat</span>
-              </div>
-              {auditLogs.length > 0 ? (
-                <div className="space-y-3">
-                  {auditLogs.map(log => (
-                    <div key={log.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '12px', background: 'var(--bg-tertiary)', borderRadius: '10px', border: '1px solid var(--border-secondary)' }}>
-                      <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-pink)', marginTop: '5px', flexShrink: 0 }} />
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1 }}>
-                        <p style={{ fontSize: '13px', color: 'var(--text-primary)', margin: 0 }}>
-                          <span style={{ fontWeight: '600' }}>{log.performer_name || 'System'}</span> — {log.action.replace(/_/g, ' ')}
-                        </p>
-                        <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                          {formatDisplayDateTime(log.timestamp)}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="py-12 text-center text-xs text-[var(--text-muted)] border border-dashed border-[var(--border-primary)] rounded-xl">
-                  Belum ada catatan audit trail pada tiket motion ini.
-                </div>
-              )}
-            </div>
           )}
 
         </div>

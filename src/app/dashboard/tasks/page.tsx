@@ -10,7 +10,7 @@ import { supabase } from '@/lib/supabase';
 import {
   getAllTasksWithRelations, getClients, getContentTypes, getUsers,
   createTask, editTask, assignTask, updateTaskStatus, submitTask, requestRevision, setMotionReadyness,
-  deleteTask, getAuditLogs, updateStratStatus, submitStrategicConcept,
+  deleteTask, updateStratStatus, submitStrategicConcept,
   getComments, addComment, deleteComment, getInvolvedUserIds
 } from '@/lib/supabase-store';
 import {
@@ -52,7 +52,7 @@ function TasksPageContent() {
   const { user } = useAuth();
   const searchParams = useSearchParams();
   const taskIdParam = searchParams?.get('taskId');
-  const tabParam = searchParams?.get('tab') as 'details' | 'chat' | 'audit' | null;
+  const tabParam = searchParams?.get('tab') as 'details' | 'chat' | null;
   const sectionParam = searchParams?.get('section') as 'active' | 'archive' | null;
 
   const [mainTab, setMainTab] = useState<'active' | 'archive'>(sectionParam === 'archive' ? 'archive' : 'active');
@@ -89,7 +89,7 @@ function TasksPageContent() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState<string | null>(null);
   const [showDetailModal, setShowDetailModal] = useState<string | null>(null);
-  const [modalInitialTab, setModalInitialTab] = useState<'details' | 'chat' | 'audit'>('details');
+  const [modalInitialTab, setModalInitialTab] = useState<'details' | 'chat'>('details');
   const [showAssignModal, setShowAssignModal] = useState<string | null>(null);
   const [showRevisionModal, setShowRevisionModal] = useState<{ taskId: string; stage: 'STRATEGIC' | 'DESIGN' } | null>(null);
   const [showSubmitModal, setShowSubmitModal] = useState<string | null>(null);
@@ -101,7 +101,7 @@ function TasksPageContent() {
       const matched = tasks.find(t => t.id === taskIdParam || t.task_code === taskIdParam);
       if (matched) {
         setShowDetailModal(matched.id);
-        setModalInitialTab(tabParam === 'chat' ? 'chat' : tabParam === 'audit' ? 'audit' : 'details');
+        setModalInitialTab(tabParam === 'chat' ? 'chat' : 'details');
       }
     }
   }, [taskIdParam, tabParam, tasks]);
@@ -2341,10 +2341,9 @@ function TaskDetailModal({
 }: { 
   task?: TaskWithRelations | null; onClose: () => void; user: UserType; onRefresh: () => void;
   onAssign?: () => void; onSubmit?: () => void; onRevise?: (stage?: 'STRATEGIC' | 'DESIGN') => void; onEdit?: () => void;
-  onSubmitStrat?: () => void; initialTab?: 'details' | 'chat' | 'audit';
+  onSubmitStrat?: () => void; initialTab?: 'details' | 'chat';
 }) {
-  const [activeTab, setActiveTab] = useState<'details' | 'chat' | 'audit'>(initialTab);
-  const [auditLogs, setAuditLogs] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<'details' | 'chat'>(initialTab);
   const [commentCount, setCommentCount] = useState<number>(task?.comments?.length || 0);
   const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
 
@@ -2353,13 +2352,6 @@ function TaskDetailModal({
       setActiveTab(initialTab);
     }
   }, [initialTab]);
-
-  useEffect(() => {
-    if (!task) return;
-    getAuditLogs().then(logs => {
-      setAuditLogs(logs.filter(l => l.entity_id === task.id || l.entity_id === task.task_code));
-    }).catch(console.error);
-  }, [task?.id, task?.task_code]);
 
   if (!task) return null;
 
@@ -2433,26 +2425,6 @@ function TaskDetailModal({
             )}
             {unreadChatCount > 0 && (
               <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" title={`${unreadChatCount} pesan belum dibaca`} />
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('audit')}
-            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-2 ${
-              activeTab === 'audit'
-                ? 'bg-blue-600 text-white shadow-sm'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
-            }`}
-          >
-            <Clock className="w-3.5 h-3.5" />
-            Audit Trail
-            {auditLogs.length > 0 && (
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                activeTab === 'audit' ? 'bg-white/25 text-white' : 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
-              }`}>
-                {auditLogs.length}
-              </span>
             )}
           </button>
         </div>
@@ -2630,37 +2602,6 @@ function TaskDetailModal({
                 setUnreadChatCount(unread);
               }}
             />
-          )}
-
-          {/* ================= TAB 3: AUDIT TRAIL ================= */}
-          {activeTab === 'audit' && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-muted)]">Riwayat Aktivitas &amp; Log Perubahan</span>
-                <span className="text-xs text-[var(--text-muted)]">{auditLogs.length} event tercatat</span>
-              </div>
-              {auditLogs.length > 0 ? (
-                <div className="space-y-3">
-                  {auditLogs.map(log => (
-                    <div key={log.id} style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '12px', background: 'var(--bg-tertiary)', borderRadius: '10px', border: '1px solid var(--border-secondary)' }}>
-                      <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--accent-blue)', marginTop: '5px', flexShrink: 0 }} />
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flex: 1 }}>
-                        <p style={{ fontSize: '13px', color: 'var(--text-primary)', margin: 0 }}>
-                          <span style={{ fontWeight: '600' }}>{log.performer_name || 'System'}</span> — {log.action.replace(/_/g, ' ')}
-                        </p>
-                        <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                          {formatDisplayDateTime(log.timestamp)}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="py-12 text-center text-xs text-[var(--text-muted)] border border-dashed border-[var(--border-primary)] rounded-xl">
-                  Belum ada catatan audit trail pada request ini.
-                </div>
-              )}
-            </div>
           )}
 
         </div>

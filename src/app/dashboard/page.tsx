@@ -3,15 +3,15 @@
 import { useEffect, useState, useCallback } from 'react';
 
 import { useAuth } from '@/lib/auth';
-import { getDashboardStats, getAllTasksWithRelations, getDesignerWorkloads, getTasks } from '@/lib/supabase-store';
-import { DESIGN_STATUS_COLORS, DESIGN_STATUS_LABELS, EXCELLENCE_COLORS, EXCELLENCE_LABELS, DIFFICULTY_COLORS, DIFFICULTY_LABELS } from '@/lib/constants';
-import { formatDisplayDate, getMonthName, cn, getInitials } from '@/lib/utils';
+import { getDashboardStats, getAllTasksWithRelations, getDesignerWorkloads } from '@/lib/supabase-store';
+import { DESIGN_STATUS_COLORS, DESIGN_STATUS_LABELS, EXCELLENCE_COLORS, EXCELLENCE_LABELS } from '@/lib/constants';
+import { formatDisplayDate, getMonthName, getInitials } from '@/lib/utils';
 import { DashboardStats, TaskWithRelations, DesignerWorkload, OperationalExcellence } from '@/lib/types';
 import Link from 'next/link';
 import {
   ClipboardList, AlertTriangle, CheckCircle2, Clock, Film,
-  TrendingUp, Users, Zap, ArrowRight, BarChart3, Target,
-  AlertCircle, Activity, ChevronRight, Calendar, Filter
+  TrendingUp, Users, Zap, ArrowRight, Target,
+  AlertCircle, Activity, ChevronRight, Calendar
 } from 'lucide-react';
 
 export default function DashboardPage() {
