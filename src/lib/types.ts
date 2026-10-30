@@ -7,11 +7,15 @@
 
 export type RoleName = 'ADMIN' | 'TEAM_LEAD' | 'STRATEGIC_PIC' | 'DESIGNER' | 'MOTION_PIC' | 'REQUESTER' | 'OPERATOR';
 
+export type CampaignName = 'BAU' | 'DD' | 'PAYDAY' | 'SPECIAL CAMPAIGN';
+
 export type ClientType = 'INTERNAL' | 'EXTERNAL';
 
 export type TaskSource = 'ORCA' | 'ECOMMERCE';
 
 export type Platform = 'TIKTOK' | 'SHOPEE' | 'TOKOPEDIA' | 'LAZADA' | 'OTHER';
+
+export type PipelineType = 'STRATEGIC' | 'GD_MOCKUP' | 'GD_NON_MOCKUP' | 'MOTION';
 
 export type DesignDifficulty = 'LOW' | 'MEDIUM' | 'HIGH';
 
@@ -28,11 +32,13 @@ export type DesignStatus =
   | 'DESIGN_SUBMITTED'
   | 'DESIGN_REVISION'
   | 'DESIGN_APPROVED'
-  | 'TASK_CLOSED';
+  | 'TASK_CLOSED'
+  | 'DESIGN_POSTPONE'
+  | 'DESIGN_CANCEL';
 
 export type StratStatus = 'NOT_REQUIRED' | 'PENDING' | 'IN_PROGRESS' | 'REVIEW' | 'REVISION' | 'APPROVED';
 
-export type MotionReadiness = 'WAITING_ASSET_GD' | 'READY_TO_ANIMATE' | 'RENDERING';
+export type MotionReadiness = 'NOT_APPLICABLE' | 'WAITING_ASSET_GD' | 'READY_TO_ANIMATE' | 'RENDERING';
 
 export type MotionStatus = 'QUEUED' | 'IN_PROGRESS' | 'SUBMITTED' | 'REVISION' | 'APPROVED' | 'COMPLETED';
 
@@ -49,7 +55,38 @@ export type AuditAction =
   | 'REASSIGN'
   | 'SUBMIT'
   | 'APPROVE'
-  | 'REVISION_REQUEST';
+  | 'REVISION_REQUEST'
+  | 'AUTO_HANDOVER'
+  | 'HANDOVER_TO_GD'
+  | 'SUBMIT_STRAT_CONCEPT'
+  | 'AUTO_ARCHIVE'
+  | 'RESTORE';
+
+export type WeekPartitionKey = 'W1' | 'W2' | 'W3' | 'W4' | 'NO_DUE_DATE';
+
+export interface WeekPartitionInfo {
+  key: WeekPartitionKey;
+  label: string;
+  title: string;
+  startDay?: number;
+  endDay?: number;
+  dateRange: string;
+}
+
+export type MotionColumnType = 'STATUS' | 'WEEK';
+
+export interface MotionBoardColumn {
+  id: string;
+  type: MotionColumnType;
+  status?: MotionStatus;
+  weekKey?: WeekPartitionKey;
+  label: string;
+  subLabel?: string;
+  color: string;
+  dateRange?: string;
+  description?: string;
+}
+
 
 // --- DATA MODELS ---
 
@@ -95,6 +132,22 @@ export interface Holiday {
   id?: number | string;
   holiday_date: string; // YYYY-MM-DD
   description: string;
+  is_cuti_bersama?: boolean;
+  is_official?: boolean;
+  year?: number;
+}
+
+export type AttachmentSection = 'brief' | 'detail';
+
+export interface TaskAttachment {
+  id: string;
+  url: string;
+  name: string;
+  size: number;
+  type: string; // 'image/jpeg' | 'image/png' | 'image/webp'
+  section: AttachmentSection;
+  uploaded_at: string;
+  uploaded_by?: string;
 }
 
 export interface CreativeTask {
@@ -130,7 +183,19 @@ export interface CreativeTask {
   operator_id: string | null;
   approved_at?: string | null;
   priority?: 'HIGH' | 'MEDIUM' | 'LOW' | string | null;
+  pipeline_type?: PipelineType;
+  is_mockup?: boolean;
   notes: string;
+  attachments?: TaskAttachment[];
+  is_archived?: boolean;
+  archived_at?: string | null;
+  archived_by?: string | null;
+  archive_period?: string | null;
+  archive_reason?: string | null;
+  restored_at?: string | null;
+  restored_by?: string | null;
+  spawned_design_task_id?: string | null;
+  source_strategic_task_id?: string | null;
   created_by: string;
   created_at: string;
   updated_at: string;
@@ -144,7 +209,7 @@ export interface MotionTask {
   client_id?: number;
   platform?: 'TIKTOK' | 'SHOPEE' | 'TOKOPEDIA' | 'LAZADA' | 'OTHER';
   motion_type?: string;
-  campaign_type?: 'BaU' | 'PayDay' | 'DD' | 'Special' | string;
+  campaign_type?: CampaignName | 'BaU' | 'PayDay' | 'DD' | 'Special' | string;
   production_date?: string;
   period_start?: string;
   period_end?: string;
@@ -156,9 +221,18 @@ export interface MotionTask {
   motion_revision_count: number;
   status_motion: MotionStatus;
   apply_date: string | null;
+  due_date?: string | null;
   link_motion: string | null;
   approved_at?: string | null;
   notes: string;
+  attachments?: TaskAttachment[];
+  is_archived?: boolean;
+  archived_at?: string | null;
+  archived_by?: string | null;
+  archive_period?: string | null;
+  archive_reason?: string | null;
+  restored_at?: string | null;
+  restored_by?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -197,6 +271,10 @@ export interface TaskRevision {
   notes: string;
   requested_by: string;
   created_at: string;
+  asset_name?: string | null;
+  asset_link?: string | null;
+  submitted_by?: string | null;
+  submitted_at?: string | null;
 }
 
 export interface AuditLog {
@@ -267,6 +345,7 @@ export interface TaskWithRelations extends CreativeTask {
   operator_name: string | null;
   revisions: TaskRevision[];
   comments?: TaskComment[];
+  active_pipeline?: PipelineType;
 }
 
 export interface DesignerWorkload {
@@ -328,7 +407,7 @@ export interface DashboardStats {
 
 export interface CreateTaskInput {
   client_id: number;
-  campaign_name: string;
+  campaign_name: CampaignName | string;
   content_type_id: number;
   task_source: TaskSource;
   platform: Platform;
@@ -338,7 +417,11 @@ export interface CreateTaskInput {
   requires_strategic_concept: boolean;
   strat_pic_id?: string;
   strat_pic_ids?: string[];
+  design_pic_id?: string | null;
+  pipeline_type?: PipelineType;
+  is_mockup?: boolean;
   notes: string;
+  attachments?: TaskAttachment[];
 }
 
 export interface AssignTaskInput {
@@ -346,6 +429,14 @@ export interface AssignTaskInput {
   design_difficulty?: DesignDifficulty;
   strat_pic_id?: string;
   strat_pic_ids?: string[];
+}
+
+export interface HandoverStrategicToGDInput {
+  design_pic_id: string;
+  design_difficulty?: DesignDifficulty;
+  target_pipeline?: PipelineType;
+  due_date?: string;
+  handover_notes?: string;
 }
 
 export interface SubmitTaskInput {
@@ -366,4 +457,175 @@ export interface RevisionInput {
   reason_category: ReasonCategory;
   notes: string;
 }
+
+// --- CAMPAIGN USAGE MANAGEMENT TYPES ---
+
+export interface CampaignDesignRecord {
+  id: string;
+  monthRequest: string;
+  reqDate: string; // DD/MM/YYYY
+  brand: string;
+  campaign: string;
+  withStrategic: string;
+  stratPIC: string;
+  designPIC: string;
+  typeOfContent: string;
+  taksSource: string; // 'Ecommerce' | 'Orca' | string
+  reqQty: string;
+  outputQty: string;
+  dueDate: string; // DD/MM/YYYY
+  submissionDate: string; // DD/MM/YYYY
+  workingDay: string;
+  operationalExcellence: 'Excellence' | 'Good' | 'Bad' | string;
+  designDifficulty: 'Low' | 'Medium' | 'High' | string;
+  stratRevision: string;
+  statusStrat: string;
+  designRevision: string;
+  statusDesign: string;
+  finalAssetName: string;
+  motionPIC: string;
+  typeOfCampaign: string;
+  applyDate: string;
+  motionDifficulty: string;
+  motionRevision: string;
+  statusMotion: string;
+  linkMotion: string;
+  remark: string;
+}
+
+export interface CampaignMotionRecord {
+  id: string;
+  namaAset: string;
+  brand: string;
+  platform: string;
+  tipe: string;
+  complexity?: string;
+  typeOfCampaign: string; // Kampanye (DD, BaU, PayDay, etc.)
+  bulan: string;
+  tanggalProduksi?: string;
+  periodeMulai: string;
+  periodeSelesai: string;
+  jamTayang: string;
+  statusMotion: string; // Status Mockup (Ready, Done, On Progress, Waiting, Blocked)
+  motionPIC: string;
+  motionDifficulty?: string;
+  revisiTipe?: string;
+  tanggalRevisi?: string;
+  picRevisi?: string;
+  linkMotion: string; // Link File (Google Drive URL or direct link)
+  qcPic?: string;
+  catatan: string;
+  studio: string;
+  activeStatus?: 'active' | 'upcoming' | 'ended' | 'unknown';
+}
+
+export type CampaignTabType = 'by-design' | 'by-strategic' | 'by-motion';
+
+export interface CampaignUsageApiResponse {
+  success: boolean;
+  message: string;
+  source: 'live' | 'cached' | 'fallback';
+  lastSyncedAt: string;
+  totalRecordsDesign: number;
+  totalRecordsMotion: number;
+  summary: {
+    excellence: number;
+    good: number;
+    bad: number;
+    unclassified: number;
+  };
+  designRecords: CampaignDesignRecord[];
+  motionRecords: CampaignMotionRecord[];
+  metadata?: {
+    spreadsheetId: string;
+    tabName: string;
+    cacheExpiresAt?: string;
+  };
+  error?: string;
+}
+
+// --- GOOGLE SHEETS REAL-TIME SYNC OUTBOX TYPES ---
+
+export type SyncOutboxStatus = 'PENDING' | 'PROCESSING' | 'SYNCED' | 'FAILED';
+export type SyncEventType = 'CREATE_TASK' | 'UPDATE_TASK' | 'CREATE_MOTION' | 'UPDATE_MOTION';
+export type SyncTargetTab = 'Mockup' | 'By Strategic' | 'Motion';
+
+export interface GoogleSheetsSyncOutboxItem {
+  id: string;
+  idempotency_key: string;
+  event_type: SyncEventType;
+  entity_id: string;
+  task_code: string;
+  target_tab: SyncTargetTab;
+  payload: Record<string, unknown>;
+  status: SyncOutboxStatus;
+  attempts: number;
+  max_attempts: number;
+  last_attempt_at: string | null;
+  synced_at: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SyncOutboxSummary {
+  total: number;
+  synced: number;
+  pending: number;
+  failed: number;
+  lastSyncedAt: string | null;
+}
+
+// --- WEEKLY ISSUES & CHALLENGES REPORTING TYPES ---
+
+export type IssueCategory =
+  | 'CAMPAIGN'
+  | 'BRIEF_MISMATCH'
+  | 'ASSET_DELAY'
+  | 'REVISION_OVERFLOW'
+  | 'FAILED'
+  | 'POSTPONE'
+  | 'RESOURCE'
+  | 'CLIENT_REQUEST'
+  | 'OTHER'
+  | 'AMAN';
+
+export type IssueSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+export type IssueStatus = 'AMAN' | 'ACTIVE' | 'RESOLVED';
+
+export interface WeeklyIssue {
+  id: string;
+  year: number;
+  month: number;
+  week: 'W1' | 'W2' | 'W3' | 'W4' | 'W5';
+  title: string;
+  category: IssueCategory;
+  severity: IssueSeverity;
+  status: IssueStatus;
+  description: string;
+  affected_pipeline: 'ALL' | 'STRATEGIC' | 'GD_MOCKUP' | 'GD_NON_MOCKUP' | 'MOTION';
+  related_task_code?: string | null;
+  reported_by?: string;
+  reported_by_name?: string;
+  resolution_notes?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateWeeklyIssueInput {
+  year: number;
+  month: number;
+  week: 'W1' | 'W2' | 'W3' | 'W4' | 'W5';
+  title: string;
+  category: IssueCategory;
+  severity?: IssueSeverity;
+  status?: IssueStatus;
+  description: string;
+  affected_pipeline?: 'ALL' | 'STRATEGIC' | 'GD_MOCKUP' | 'GD_NON_MOCKUP' | 'MOTION';
+  related_task_code?: string | null;
+  reported_by?: string;
+  reported_by_name?: string;
+}
+
+
 

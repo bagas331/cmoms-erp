@@ -25,8 +25,12 @@ export function generateTaskCode(year: number, sequence: number): string {
  */
 export function formatDisplayDate(dateStr: string | null | undefined): string {
   if (!dateStr) return '-';
-  if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-    const [y, m, d] = dateStr.split('-').map(Number);
+  const cleanStr = String(dateStr).trim();
+  const dateMatch = cleanStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (dateMatch) {
+    const y = parseInt(dateMatch[1], 10);
+    const m = parseInt(dateMatch[2], 10);
+    const d = parseInt(dateMatch[3], 10);
     const date = new Date(y, m - 1, d);
     return date.toLocaleDateString('id-ID', {
       day: 'numeric',
@@ -34,8 +38,8 @@ export function formatDisplayDate(dateStr: string | null | undefined): string {
       year: 'numeric',
     });
   }
-  const date = new Date(dateStr);
-  if (isNaN(date.getTime())) return typeof dateStr === 'string' ? dateStr : '-';
+  const date = new Date(cleanStr);
+  if (isNaN(date.getTime())) return '-';
   return date.toLocaleDateString('id-ID', {
     day: 'numeric',
     month: 'short',
@@ -275,7 +279,9 @@ export function debounce<T extends (...args: unknown[]) => unknown>(
 /**
  * Sanitize URLs to prevent XSS (blocks javascript:, data:, vbscript:, etc.)
  */
-export function sanitizeUrl(url: string | null | undefined, fallback: string = '#'): string {
+export function sanitizeUrl(url: string | null | undefined, fallback: null): string | null;
+export function sanitizeUrl(url: string | null | undefined, fallback?: string): string;
+export function sanitizeUrl(url: string | null | undefined, fallback: string | null = '#'): string | null {
   if (!url || typeof url !== 'string') return fallback;
   const trimmed = url.trim();
   if (!trimmed) return fallback;
@@ -770,5 +776,75 @@ export function getQuantityStatus(reqQty?: number | null, outputQty?: number | n
     label: hasDiscrepancy ? `${out}/${req} (${remaining} remaining)` : `${out}/${req}`
   };
 }
+
+/**
+ * Safely extracts user-friendly error message from an unknown error or Postgrest error object.
+ * Prevents '[object Object]' from ever being displayed to the user.
+ */
+export function extractErrorMessage(error: unknown, fallback = 'Terjadi kesalahan sistem.'): string {
+  if (!error) return fallback;
+  if (typeof error === 'string') return error;
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'object') {
+    const errObj = error as Record<string, any>;
+    if (typeof errObj.message === 'string' && errObj.message.trim()) return errObj.message;
+    if (typeof errObj.error_description === 'string' && errObj.error_description.trim()) return errObj.error_description;
+    if (typeof errObj.details === 'string' && errObj.details.trim()) return errObj.details;
+    if (typeof errObj.hint === 'string' && errObj.hint.trim()) return errObj.hint;
+    try {
+      const json = JSON.stringify(error);
+      if (json && json !== '{}') return json;
+    } catch {}
+  }
+  return String(error) || fallback;
+}
+
+/**
+ * Check if a user has permission to delete a task/card
+ */
+export function canUserDeleteTask(
+  user: { id?: string; role_name?: string } | null | undefined,
+  task: {
+    id?: string;
+    created_by?: string;
+    design_pic_id?: string | null;
+    strat_pic_id?: string | null;
+    strat_pic_ids?: string[] | null;
+    pipeline_type?: string;
+    requires_strategic_concept?: boolean;
+    status_strat?: string;
+  }
+): boolean {
+  if (!user || !user.id || !user.role_name) return false;
+  // Admin, Team Lead, AE (Requester), and Strategic PIC can manage and delete any task
+  if (['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) return true;
+  // Creator of the task can delete their task
+  if (task.created_by && task.created_by === user.id) return true;
+  // Strategic PIC can delete tasks in Strategic pipeline
+  const isStrategicTask = task.pipeline_type === 'STRATEGIC' || Boolean(task.requires_strategic_concept && task.status_strat !== 'NOT_REQUIRED');
+  if (user.role_name === 'STRATEGIC_PIC' && isStrategicTask) return true;
+  // Designer can delete uncompleted tasks assigned to them
+  if (user.role_name === 'DESIGNER' && task.design_pic_id === user.id) return true;
+  return false;
+}
+
+/**
+ * Check if a user has permission to delete a motion task/card
+ */
+export function canUserDeleteMotionTask(
+  user: { id?: string; role_name?: string } | null | undefined,
+  motionTask: {
+    id?: string;
+    created_by?: string;
+    motion_pic_id?: string | null;
+  }
+): boolean {
+  if (!user || !user.id || !user.role_name) return false;
+  if (['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) return true;
+  if (motionTask.created_by && motionTask.created_by === user.id) return true;
+  if (user.role_name === 'MOTION_PIC' && motionTask.motion_pic_id === user.id) return true;
+  return false;
+}
+
 
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback, useMemo, Suspense } from 'react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { 
   getMotionTasks, 
@@ -17,19 +18,28 @@ import {
   deleteMotionTask, 
   getComments, 
   addComment, 
-  deleteComment
+  deleteComment,
+  restoreMotionTask,
+  autoArchiveCompletedTasks,
+  updateMotionDueDate,
+  addTaskAttachment,
+  removeTaskAttachment
 } from '@/lib/supabase-store';
 import { TaskChatSection } from '@/components/task-chat-section';
 import { MotionKanbanCard } from '@/components/motion-kanban-card';
 import { supabase } from '@/lib/supabase';
 import { usePersistedState } from '@/lib/use-persistent-state';
 import { useClickOutside } from '@/lib/use-click-outside';
+import { useModalManager } from '@/lib/use-modal-manager';
 import { 
   MOTION_KANBAN_COLUMNS, 
   MOTION_STATUS_COLORS, 
   MOTION_STATUS_LABELS, 
   MOTION_DIFFICULTY_LABELS, 
-  REASON_LABELS
+  REASON_LABELS,
+  CAMPAIGN_NAMES,
+  isValidCampaignName,
+  normalizeCampaignName
 } from '@/lib/constants';
 import { 
   formatDisplayDate, 
@@ -37,7 +47,8 @@ import {
   sanitizeUrl,
   getWeekOfMonth,
   getISOWeekNumber,
-  getWeekRangeLabel
+  getWeekRangeLabel,
+  canUserDeleteMotionTask
 } from '@/lib/utils';
 import { downloadCSV } from '@/lib/export';
 import { 
@@ -48,8 +59,14 @@ import {
   Client, 
   MotionDifficulty, 
   TaskComment, 
-  ReasonCategory 
+  ReasonCategory,
+  WeekPartitionKey,
+  WeekPartitionInfo,
+  TaskAttachment,
+  AttachmentSection
 } from '@/lib/types';
+import { getDueWeekPartition, getWeeklyPartitionsForMonth, isTaskOverdue, canUserRestoreTask } from '@/lib/archive-engine';
+import { validateStageTransition } from '@/lib/pipeline-router';
 import { useAuth } from '@/lib/auth';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -91,8 +108,15 @@ import {
   CheckSquare, 
   RefreshCw,
   FileText,
-  FolderCheck
+  FolderCheck,
+  ArrowRight,
+  Check,
+  Share2,
+  Copy
 } from 'lucide-react';
+import { RequestImageUpload } from '@/components/request-image-upload';
+import { useKanbanScroll } from '@/lib/use-kanban-scroll';
+import { KanbanScrollToolbar, KanbanFloatingArrows } from '@/components/kanban-scroll-toolbar';
 
 type EnrichedMotionTask = MotionTask & { parentTask?: TaskWithRelations };
 
@@ -120,22 +144,140 @@ function MotionPageContent() {
   const [allTasks, setAllTasks] = useState<TaskWithRelations[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // View Mode: 'kanban' | 'table'
-  const [viewMode, setViewMode] = usePersistedState<'kanban' | 'table'>('cmos_motion_view_mode', 'kanban');
+  // View Mode: 'kanban' | 'weekly' | 'table'
+  const [viewMode, setViewMode] = usePersistedState<'kanban' | 'weekly' | 'table'>('cmos_motion_view_mode', 'kanban');
 
-  // Modal States
-  const [showAssign, setShowAssign] = useState<string | null>(null);
-  const [showDetail, setShowDetail] = useState<EnrichedMotionTask | null>(null);
-  const [detailInitialTab, setDetailInitialTab] = useState<'details' | 'chat'>('details');
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState<string | null>(null);
-  const [showSubmitModal, setShowSubmitModal] = useState<{ taskId: string; targetAfterSubmit?: MotionStatus | null } | string | null>(null);
-  const [showRevisionModal, setShowRevisionModal] = useState<string | null>(null);
-  const [showHandoverModal, setShowHandoverModal] = useState<string | null>(null);
+  // Data Refresh function
+  const refresh = useCallback(async () => {
+    try {
+      try {
+        await autoArchiveCompletedTasks();
+      } catch (e) {
+        console.warn('Auto archive motion run error:', e);
+      }
 
-  // Auto open modal from searchParams (e.g. from notification click)
+      const [mts, tasks, users, clients] = await Promise.all([
+        getMotionTasks(),
+        getAllTasksWithRelations(),
+        getUsers(),
+        getClients(),
+      ]);
+      setAllUsers(users);
+      setAllClients(clients);
+      setAllTasks(tasks);
+      const enriched: EnrichedMotionTask[] = mts.map(mt => {
+        const parent = tasks.find(t => t.id === mt.task_id);
+        const resolvedAttachments = (mt.attachments && mt.attachments.length > 0)
+          ? mt.attachments
+          : (parent?.attachments || []);
+        return {
+          ...mt,
+          attachments: resolvedAttachments,
+          parentTask: parent,
+        };
+      });
+      setMotionTasks(enriched);
+    } catch (err) {
+      console.error('Failed to load motion data:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // ===================== UNIFIED MODAL LIFECYCLE MANAGER =====================
+  type MotionModalType = 'DETAIL' | 'ASSIGN' | 'CREATE' | 'EDIT' | 'SUBMIT' | 'REVISION' | 'HANDOVER';
+
+  const {
+    activeModal,
+    isOpen,
+    getPayload,
+    openModal,
+    closeModal,
+    switchModal,
+  } = useModalManager<MotionModalType>({ lockScroll: true, closeOnEscape: true });
+
+  const clearTaskIdParam = useCallback(() => {
+    if (typeof window !== 'undefined' && (window.location.search.includes('taskId=') || window.location.search.includes('requestId='))) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('taskId');
+      url.searchParams.delete('requestId');
+      url.searchParams.delete('tab');
+      window.history.replaceState(null, '', url.pathname + (url.search ? url.search : ''));
+    }
+  }, []);
+
+  const handleCloseAnyModal = useCallback(() => {
+    closeModal();
+    clearTaskIdParam();
+    refresh();
+  }, [closeModal, clearTaskIdParam, refresh]);
+
+  // Backward-compatible adapters
+  const showDetailId = isOpen('DETAIL') ? getPayload<{ motionTaskId: string }>('DETAIL')?.motionTaskId || null : null;
+  const showDetail = showDetailId ? motionTasks.find(t => t.id === showDetailId) || null : null;
+  const detailInitialTab = isOpen('DETAIL') ? getPayload<{ initialTab?: 'details' | 'chat' }>('DETAIL')?.initialTab || 'details' : 'details';
+  const assignPayload = isOpen('ASSIGN') ? getPayload<{ taskId: string; targetStatus?: MotionStatus | null }>('ASSIGN') : null;
+  const showAssign = assignPayload?.taskId || null;
+  const assignTargetStatus = assignPayload?.targetStatus || null;
+  const showCreateModal = isOpen('CREATE');
+  const showEditModal = isOpen('EDIT') ? getPayload<{ taskId: string }>('EDIT')?.taskId || null : null;
+  const showSubmitModal = isOpen('SUBMIT') ? getPayload<{ taskId: string; targetAfterSubmit?: MotionStatus | null }>('SUBMIT') || null : null;
+  const showRevisionModal = isOpen('REVISION') ? getPayload<{ taskId: string }>('REVISION')?.taskId || null : null;
+  const showHandoverModal = isOpen('HANDOVER') ? getPayload<{ taskId: string }>('HANDOVER')?.taskId || null : null;
+
+  const setShowDetail = useCallback((task: EnrichedMotionTask | null, tab: 'details' | 'chat' = 'details') => {
+    if (task) openModal('DETAIL', { motionTaskId: task.id, initialTab: tab });
+    else handleCloseAnyModal();
+  }, [openModal, handleCloseAnyModal]);
+
+  const setDetailInitialTab = useCallback((tab: 'details' | 'chat') => {
+    if (activeModal?.type === 'DETAIL') {
+      const current = getPayload<{ motionTaskId: string }>('DETAIL');
+      if (current?.motionTaskId) {
+        openModal('DETAIL', { motionTaskId: current.motionTaskId, initialTab: tab });
+      }
+    }
+  }, [activeModal, getPayload, openModal]);
+
+  const setShowAssign = useCallback((taskId: string | null, targetStatus?: MotionStatus | null) => {
+    if (taskId) openModal('ASSIGN', { taskId, targetStatus: targetStatus || null });
+    else handleCloseAnyModal();
+  }, [openModal, handleCloseAnyModal]);
+
+  const setShowCreateModal = useCallback((show: boolean) => {
+    if (show) openModal('CREATE');
+    else handleCloseAnyModal();
+  }, [openModal, handleCloseAnyModal]);
+
+  const setShowEditModal = useCallback((taskId: string | null) => {
+    if (taskId) openModal('EDIT', { taskId });
+    else handleCloseAnyModal();
+  }, [openModal, handleCloseAnyModal]);
+
+  const setShowSubmitModal = useCallback((payload: { taskId: string; targetAfterSubmit?: MotionStatus | null } | string | null) => {
+    if (!payload) {
+      handleCloseAnyModal();
+      return;
+    }
+    const taskId = typeof payload === 'string' ? payload : payload.taskId;
+    const targetAfterSubmit = typeof payload === 'object' ? payload.targetAfterSubmit : null;
+    openModal('SUBMIT', { taskId, targetAfterSubmit });
+  }, [openModal, handleCloseAnyModal]);
+
+  const setShowRevisionModal = useCallback((taskId: string | null) => {
+    if (taskId) openModal('REVISION', { taskId });
+    else handleCloseAnyModal();
+  }, [openModal, handleCloseAnyModal]);
+
+  const setShowHandoverModal = useCallback((taskId: string | null) => {
+    if (taskId) openModal('HANDOVER', { taskId });
+    else handleCloseAnyModal();
+  }, [openModal, handleCloseAnyModal]);
+
+  // Auto open modal from searchParams (guarded by openedTaskIdParamRef to prevent phantom loops on background refreshes)
+  const openedTaskIdParamRef = useRef<string | null>(null);
   useEffect(() => {
-    if (taskIdParam && motionTasks.length > 0) {
+    if (taskIdParam && motionTasks.length > 0 && openedTaskIdParamRef.current !== taskIdParam) {
       const matched = motionTasks.find(t => 
         t.id === taskIdParam || 
         t.task_id === taskIdParam || 
@@ -143,36 +285,102 @@ function MotionPageContent() {
         t.parentTask?.task_code === taskIdParam
       );
       if (matched) {
-        setShowDetail(matched);
-        setDetailInitialTab(tabParam === 'chat' ? 'chat' : 'details');
+        openedTaskIdParamRef.current = taskIdParam;
+        openModal('DETAIL', { motionTaskId: matched.id, initialTab: tabParam === 'chat' ? 'chat' : 'details' });
       }
     }
-  }, [taskIdParam, tabParam, motionTasks]);
+  }, [taskIdParam, tabParam, motionTasks, openModal]);
 
   // Drag & Drop State
   const [draggedMotionId, setDraggedMotionId] = useState<string | null>(null);
   const [dragOverMotionCol, setDragOverMotionCol] = useState<string | null>(null);
 
-  // Filter States
-  const [searchQuery, setSearchQuery] = usePersistedState<string>('cmos_motion_search', '');
-  const [filterStatus, setFilterStatus] = usePersistedState<string>('cmos_motion_filter_status', 'all');
-  const [filterPic, setFilterPic] = usePersistedState<string>('cmos_motion_filter_pic', 'all');
-  const [filterRole, setFilterRole] = usePersistedState<string>('cmos_motion_filter_role', 'all');
-  const [filterUser, setFilterUser] = usePersistedState<string>('cmos_motion_filter_user', 'all');
-  const [filterClient, setFilterClient] = usePersistedState<string>('cmos_motion_filter_client', 'all');
-  const [filterMonths, setFilterMonths] = usePersistedState<string[]>('cmos_motion_filter_months', []);
-  const [filterYears, setFilterYears] = usePersistedState<string[]>('cmos_motion_filter_years', []);
-  const [showMonthDropdown, setShowMonthDropdown] = useState(false);
-  const [showYearDropdown, setShowYearDropdown] = useState(false);
-  const monthDropdownRef = useRef<HTMLDivElement>(null);
-  const yearDropdownRef = useRef<HTMLDivElement>(null);
+  // Active Pipeline Filters & Quick Filter Chips (Stitch Design Specification)
+  type QuickFilter = 'all' | 'my_tasks' | 'overdue' | 'needs_review';
 
-  useClickOutside(monthDropdownRef, () => setShowMonthDropdown(false), showMonthDropdown);
-  useClickOutside(yearDropdownRef, () => setShowYearDropdown(false), showYearDropdown);
-  const [filterExactDate, setFilterExactDate] = usePersistedState<string>('cmos_motion_filter_exact_date', '');
+  const [searchQuery, setSearchQuery] = useState<string>(() => searchParams?.get('q') || '');
+  const [selectedBrand, setSelectedBrand] = useState<string>(() => searchParams?.get('brand') || 'all');
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>(() => {
+    const s = searchParams?.get('status');
+    if (s === 'my_tasks' || s === 'overdue' || s === 'needs_review') return s;
+    return 'all';
+  });
+
+  // URL query parameters synchronization helper
+  const updateUrlParams = useCallback((newParams: { q?: string; brand?: string; status?: QuickFilter }) => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (newParams.q !== undefined) {
+      if (newParams.q.trim()) url.searchParams.set('q', newParams.q.trim());
+      else url.searchParams.delete('q');
+    }
+    if (newParams.brand !== undefined) {
+      if (newParams.brand && newParams.brand !== 'all') url.searchParams.set('brand', newParams.brand);
+      else url.searchParams.delete('brand');
+    }
+    if (newParams.status !== undefined) {
+      if (newParams.status && newParams.status !== 'all') url.searchParams.set('status', newParams.status);
+      else url.searchParams.delete('status');
+    }
+    window.history.replaceState(null, '', url.pathname + (url.search ? url.search : ''));
+  }, []);
+
+  // Sync state if searchParams change externally (e.g. browser navigation)
+  useEffect(() => {
+    const q = searchParams?.get('q') || '';
+    const b = searchParams?.get('brand') || 'all';
+    const s = searchParams?.get('status') as QuickFilter || 'all';
+    if (q !== searchQuery) setSearchQuery(q);
+    if (b !== selectedBrand) setSelectedBrand(b);
+    if (['all', 'my_tasks', 'overdue', 'needs_review'].includes(s) && s !== quickFilter) {
+      setQuickFilter(s);
+    }
+  }, [searchParams]);
+
+  const handleSearchChange = (val: string) => {
+    setSearchQuery(val);
+    updateUrlParams({ q: val });
+  };
+
+  const handleBrandChange = (val: string) => {
+    setSelectedBrand(val);
+    updateUrlParams({ brand: val });
+  };
+
+  const handleQuickFilterToggle = (filter: 'my_tasks' | 'overdue' | 'needs_review') => {
+    const nextFilter: QuickFilter = quickFilter === filter ? 'all' : filter;
+    setQuickFilter(nextFilter);
+    updateUrlParams({ status: nextFilter });
+  };
+
+  const handleDeleteMotionTask = useCallback(async (motionTaskId: string, taskCode?: string, clientName?: string) => {
+    if (!user) return;
+    const label = taskCode ? `${taskCode}${clientName ? ` (${clientName})` : ''}` : 'tiket motion ini';
+    const confirmed = window.confirm(`Apakah Anda yakin ingin menghapus tiket motion ${label}? Tindakan ini tidak dapat dibatalkan.`);
+    if (!confirmed) return;
+
+    try {
+      await deleteMotionTask(motionTaskId, user.id);
+      refresh();
+      handleCloseAnyModal();
+    } catch (err: any) {
+      console.error('Gagal menghapus tiket motion:', err);
+      alert(`Gagal menghapus tiket motion: ${err?.message || err}`);
+    }
+  }, [user, refresh, handleCloseAnyModal]);
 
   // Section Navigation: 'active' | 'archive'
   const [mainTab, setMainTab] = usePersistedState<'active' | 'archive'>('cmos_motion_main_tab', 'active');
+
+  useEffect(() => {
+    const tab = searchParams?.get('tab');
+    const section = searchParams?.get('section');
+    if (tab === 'archive' || section === 'archive') {
+      setMainTab('archive');
+    } else if (tab === 'active' || section === 'active') {
+      setMainTab('active');
+    }
+  }, [searchParams, setMainTab]);
 
   // Approved Archive Filters, Period Navigation & View Mode
   const [archiveViewMode, setArchiveViewMode] = usePersistedState<'kanban' | 'table'>('cmos_motion_archive_view_mode', 'kanban');
@@ -201,22 +409,6 @@ function MotionPageContent() {
 
   const motionUsers = allUsers.filter(u => ['MOTION_PIC', 'TEAM_LEAD'].includes(u.role_name));
 
-  const motionUserOptions = useMemo(() => {
-    let list = allUsers;
-    if (filterRole === 'MOTION_PIC') {
-      list = allUsers.filter(u => ['MOTION_PIC', 'TEAM_LEAD'].includes(u.role_name));
-    } else if (filterRole === 'REQUESTER') {
-      list = allUsers.filter(u => u.role_name === 'REQUESTER');
-    } else if (filterRole === 'STRATEGIC_PIC') {
-      list = allUsers.filter(u => ['STRATEGIC_PIC', 'TEAM_LEAD'].includes(u.role_name));
-    } else if (filterRole === 'DESIGNER') {
-      list = allUsers.filter(u => ['DESIGNER', 'TEAM_LEAD'].includes(u.role_name));
-    } else if (filterRole === 'OPERATOR') {
-      list = allUsers.filter(u => u.role_name === 'OPERATOR');
-    }
-    return list;
-  }, [allUsers, filterRole]);
-
   const uniquePics = Array.from(new Set(motionTasks.map(t => 
     t.motion_pic_id ? motionUsers.find(u => u.id === t.motion_pic_id)?.full_name || 'Unassigned' : 'Unassigned'
   ))).sort();
@@ -226,60 +418,31 @@ function MotionPageContent() {
     return date.toLocaleDateString('en-US', { month: 'short' });
   };
 
-  const refresh = async () => {
+  const handleRestoreMotionTask = async (motionTaskId: string) => {
+    if (!user) return;
     try {
-      const [mts, tasks, users, clients] = await Promise.all([
-        getMotionTasks(),
-        getAllTasksWithRelations(),
-        getUsers(),
-        getClients(),
-      ]);
-      setAllUsers(users);
-      setAllClients(clients);
-      setAllTasks(tasks);
-      const enriched: EnrichedMotionTask[] = mts.map(mt => ({
-        ...mt,
-        parentTask: tasks.find(t => t.id === mt.task_id),
-      }));
-      setMotionTasks(enriched);
-
-      // If detail modal is open, refresh detail reference
-      if (showDetail) {
-        const updatedDetail = enriched.find(t => t.id === showDetail.id);
-        if (updatedDetail) setShowDetail(updatedDetail);
+      const res = await restoreMotionTask(motionTaskId, user.id, user);
+      if (res.success) {
+        await refresh();
+        alert('Card Motion berhasil dipulihkan (restored) ke board aktif.');
+      } else {
+        alert(`Gagal memulihkan card: ${res.message}`);
       }
-    } catch (err) {
-      console.error('Failed to load motion data:', err);
-    } finally {
-      setLoading(false);
+    } catch (err: any) {
+      alert(`Error restore motion task: ${err.message || err}`);
     }
   };
 
   useEffect(() => { 
     refresh(); 
-  }, []);
+  }, [refresh]);
 
-  // Keyboard shortcut to close modals with ESC
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setShowDetail(null);
-        setShowAssign(null);
-        setShowCreateModal(false);
-        setShowEditModal(null);
-        setShowSubmitModal(null);
-        setShowRevisionModal(null);
-        setShowHandoverModal(null);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+
 
   // 1. All Accessible Approved Motion Tasks (Archive Base with RBAC)
   const accessibleApprovedMotionTasks = useMemo(() => {
     if (!user) return [];
-    let list = motionTasks.filter(mt => mt.status_motion === 'APPROVED' || mt.status_motion === 'COMPLETED');
+    let list = motionTasks.filter(mt => (mt.is_archived === true || mt.status_motion === 'APPROVED' || mt.status_motion === 'COMPLETED') && !mt.restored_at);
     
     // Role-Based Access Control
     if (!['ADMIN', 'TEAM_LEAD'].includes(user.role_name)) {
@@ -295,7 +458,7 @@ function MotionPageContent() {
   }, [motionTasks, user]);
 
   const activeMotionTasksCount = useMemo(() => {
-    return motionTasks.filter(mt => mt.status_motion !== 'APPROVED' && mt.status_motion !== 'COMPLETED').length;
+    return motionTasks.filter(mt => !mt.is_archived).length;
   }, [motionTasks]);
 
   const approvedMotionTasksCount = accessibleApprovedMotionTasks.length;
@@ -519,12 +682,19 @@ function MotionPageContent() {
 
   const totalArchivePages = Math.ceil(sortedArchiveMotionTasks.length / archiveLimit) || 1;
 
+  const isReadOnly = useMemo(() => {
+    if (!user) return true;
+    if (['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) return false;
+    return user.role_name !== 'MOTION_PIC';
+  }, [user]);
+
+
   if (!user) return null;
 
   const canMoveMotionTask = (mt: EnrichedMotionTask) => {
-    if (!user) return false;
-    if (['ADMIN', 'TEAM_LEAD'].includes(user.role_name)) return true;
-    if (user.role_name === 'MOTION_PIC' && mt.motion_pic_id === user.id) return true;
+    if (!user || isReadOnly) return false;
+    if (['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) return true;
+    if (user.role_name === 'MOTION_PIC' && (!mt.motion_pic_id || mt.motion_pic_id === user.id)) return true;
     if (user.role_name === 'REQUESTER' && mt.parentTask?.created_by === user.id) return true;
     return false;
   };
@@ -539,7 +709,7 @@ function MotionPageContent() {
     e.dataTransfer.effectAllowed = 'move';
   };
 
-  const handleDragOver = (e: React.DragEvent, targetStatus: MotionStatus) => {
+  const handleDragOver = (e: React.DragEvent, targetStatus: MotionStatus | string) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     if (dragOverMotionCol !== targetStatus) {
@@ -547,69 +717,120 @@ function MotionPageContent() {
     }
   };
 
-  const handleDragLeave = (e: React.DragEvent, targetStatus: MotionStatus) => {
+  const handleDragLeave = (e: React.DragEvent, targetStatus: MotionStatus | string) => {
     if (dragOverMotionCol === targetStatus) {
       setDragOverMotionCol(null);
     }
   };
 
   const handleStatusChange = async (id: string, status: MotionStatus) => {
-    await updateMotionStatus(id, status);
-    await refresh();
+    if (!user) return;
+    try {
+      await updateMotionStatus(id, status, user.id);
+      if (status === 'APPROVED' && quickFilter !== 'all') {
+        setQuickFilter('all');
+        updateUrlParams({ status: 'all' });
+      }
+      await refresh();
+    } catch (err: any) {
+      console.error('Error changing motion status:', err);
+      alert(`Gagal mengubah status motion: ${err?.message || (typeof err === 'object' ? JSON.stringify(err) : String(err))}`);
+    }
   };
 
-  const handleDrop = async (e: React.DragEvent, targetStatus: MotionStatus) => {
+  const handleDrop = async (e: React.DragEvent, targetCol: MotionStatus | string) => {
     e.preventDefault();
     setDragOverMotionCol(null);
     const mId = e.dataTransfer.getData('text/plain') || draggedMotionId;
     setDraggedMotionId(null);
 
     if (!mId || !user) return;
+    if (isReadOnly) {
+      alert(`Mode Read-Only: Role ${user.role_name} tidak memiliki izin untuk memindahkan card pada Motion Pipeline.`);
+      return;
+    }
     const mt = motionTasks.find(t => t.id === mId);
-    if (!mt || mt.status_motion === targetStatus) return;
+    if (!mt) return;
+
+    // Weekly Column Drop: Reschedule due date to target week
+    if (['W1', 'W2', 'W3', 'W4'].includes(targetCol)) {
+      if (!['ADMIN', 'TEAM_LEAD', 'MOTION_PIC', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) {
+        alert('Hanya Admin, Team Lead, Requester, Strategic PIC, atau Motion Designer yang dapat mengubah jadwal mingguan.');
+        return;
+      }
+      if (mt.status_motion !== 'APPROVED' && mt.status_motion !== 'COMPLETED') {
+        alert('Hanya motion request yang telah di-approve yang dapat dijadwalkan ke kolom Weekly (W1 - W4). Pastikan request berstatus Approved terlebih dahulu.');
+        return;
+      }
+      const now = new Date();
+      const baseYear = now.getFullYear();
+      const baseMonth = now.getMonth();
+      let targetDay = 7;
+      if (targetCol === 'W1') targetDay = 7;
+      else if (targetCol === 'W2') targetDay = 14;
+      else if (targetCol === 'W3') targetDay = 21;
+      else if (targetCol === 'W4') {
+        const lastDay = new Date(baseYear, baseMonth + 1, 0).getDate();
+        targetDay = Math.min(28, lastDay);
+      }
+
+      const newDate = new Date(Date.UTC(baseYear, baseMonth, targetDay, 17, 0, 0));
+      await updateMotionDueDate(mt.id, newDate.toISOString(), user.id);
+      await refresh();
+      return;
+    }
+
+    const targetStatus = targetCol as MotionStatus;
+    if (mt.status_motion === targetStatus) return;
+
+    const stageCheck = validateStageTransition('MOTION', mt.status_motion, targetStatus, {
+      hasPic: Boolean(mt.motion_pic_id),
+      userRole: user.role_name
+    });
+
+    if (!stageCheck.allowed) {
+      alert(stageCheck.reason || 'Perpindahan tahapan tidak diizinkan.');
+      return;
+    }
 
     try {
       if (targetStatus === 'QUEUED') {
-        if (!['ADMIN', 'TEAM_LEAD'].includes(user.role_name)) {
-          alert('Hanya Admin atau Team Lead yang dapat mengembalikan status ke Queued.');
+        if (!['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) {
+          alert('Hanya Admin, Team Lead, Requester, atau Strategic PIC yang dapat mengembalikan status ke Queued.');
           return;
         }
         await handleStatusChange(mt.id, 'QUEUED');
       } else if (targetStatus === 'IN_PROGRESS') {
-        if (!['ADMIN', 'TEAM_LEAD'].includes(user.role_name) && mt.motion_pic_id !== user.id) {
-          alert('Hanya Motion Designer yang ditugaskan atau Lead yang dapat memulai pengerjaan motion.');
+        if (!mt.motion_pic_id) {
+          setShowAssign(mt.id, 'IN_PROGRESS');
+          return;
+        }
+        if (!['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) && mt.motion_pic_id !== user.id) {
+          alert('Hanya Motion Designer yang ditugaskan, Requester, Strategic PIC, atau Lead yang dapat memulai pengerjaan motion.');
           return;
         }
         await handleStatusChange(mt.id, 'IN_PROGRESS');
       } else if (targetStatus === 'SUBMITTED') {
-        if (!['ADMIN', 'TEAM_LEAD'].includes(user.role_name) && mt.motion_pic_id !== user.id) {
-          alert('Hanya Motion Designer yang ditugaskan atau Lead yang dapat men-submit hasil motion.');
+        if (!['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) && mt.motion_pic_id !== user.id) {
+          alert('Hanya Motion Designer yang ditugaskan, Requester, Strategic PIC, atau Lead yang dapat men-submit hasil motion.');
           return;
         }
         setShowSubmitModal({ taskId: mt.id, targetAfterSubmit: null });
       } else if (targetStatus === 'REVISION') {
-        if (mt.status_motion !== 'SUBMITTED') {
-          setShowSubmitModal({ taskId: mt.id, targetAfterSubmit: 'REVISION' });
+        if (!['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'REQUESTER'].includes(user.role_name)) {
+          alert('Hanya Requester, Strategic PIC, Team Lead, atau Admin yang dapat meminta revisi motion.');
           return;
         }
         setShowRevisionModal(mt.id);
       } else if (targetStatus === 'APPROVED') {
-        if (mt.status_motion !== 'SUBMITTED') {
-          setShowSubmitModal({ taskId: mt.id, targetAfterSubmit: 'APPROVED' });
-          return;
-        }
         if (!['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'REQUESTER'].includes(user.role_name)) {
-          alert('Hanya Requester, Team Lead, atau Admin yang dapat menyetujui motion.');
+          alert('Hanya Requester, Strategic PIC, Team Lead, atau Admin yang dapat menyetujui motion.');
           return;
         }
         await handleStatusChange(mt.id, 'APPROVED');
       } else if (targetStatus === 'COMPLETED') {
-        if (!['ADMIN', 'TEAM_LEAD'].includes(user.role_name)) {
-          alert('Hanya Admin atau Team Lead yang dapat melakukan handover/complete.');
-          return;
-        }
-        if (mt.status_motion !== 'APPROVED') {
-          alert('Hanya motion yang sudah di-approve yang dapat di-complete/handover.');
+        if (!['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) {
+          alert('Hanya Admin, Team Lead, Requester, atau Strategic PIC yang dapat melakukan handover/complete.');
           return;
         }
         setShowHandoverModal(mt.id);
@@ -621,79 +842,177 @@ function MotionPageContent() {
     }
   };
 
-  // Filter active motion tasks
-  const filteredMotionTasks = motionTasks.filter(mt => {
-    const pt = mt.parentTask;
-    const clientName = pt?.client_name || allClients.find(c => c.id === mt.client_id)?.name || 'Unknown Client';
-    const motionPicName = mt.motion_pic_id ? motionUsers.find(u => u.id === mt.motion_pic_id)?.full_name || 'Unassigned' : 'Unassigned';
-    const creatorUser = pt?.created_by ? allUsers.find(u => u.id === pt.created_by) : null;
-    const creatorName = creatorUser?.full_name || '';
+  // Unique available brands across clients and motion tasks
+  const availableBrands = useMemo(() => {
+    const brands = new Set<string>();
+    allClients.forEach(c => {
+      if (c.name) brands.add(c.name);
+    });
+    motionTasks.forEach(mt => {
+      if (mt.parentTask?.client_name) brands.add(mt.parentTask.client_name);
+    });
+    return Array.from(brands).sort();
+  }, [allClients, motionTasks]);
 
-    const matchSearch = searchQuery === '' ||
-      (pt?.task_code || mt.id || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      clientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (pt?.campaign_name || mt.campaign_type || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (mt.motion_type || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (mt.studio || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (mt.platform || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      motionPicName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      creatorName.toLowerCase().includes(searchQuery.toLowerCase());
-    
-    const matchStatus = filterStatus === 'all' || mt.status_motion === filterStatus;
-    const matchPic = filterPic === 'all' || motionPicName === filterPic;
-    const matchClient = filterClient === 'all' || clientName === filterClient;
-    
-    let matchDate = true;
-    if (filterExactDate) {
-      matchDate = (mt.created_at || '').startsWith(filterExactDate) || pt?.req_date === filterExactDate;
-    } else {
-      const createdMonth = (mt.created_at || '').substring(5, 7);
-      const createdYear = (mt.created_at || '').substring(0, 4);
-      const reqMonth = pt?.req_date ? pt.req_date.substring(5, 7) : '';
-      const reqYear = pt?.req_date ? pt.req_date.substring(0, 4) : '';
-      
-      const matchMonth = filterMonths.length === 0 || (!!createdMonth && filterMonths.includes(createdMonth)) || (!!reqMonth && filterMonths.includes(reqMonth));
-      const matchYear = filterYears.length === 0 || (!!createdYear && filterYears.includes(createdYear)) || (!!reqYear && filterYears.includes(reqYear));
-      matchDate = Boolean(matchMonth && matchYear);
+  const isMyAssignedMotion = useCallback((mt: EnrichedMotionTask) => {
+    if (!user) return false;
+    return mt.motion_pic_id === user.id || mt.operator_id === user.id;
+  }, [user]);
+
+  const getMotionDueDate = useCallback((mt: EnrichedMotionTask) => {
+    return mt.parentTask?.due_date || mt.period_end || mt.production_date || mt.apply_date || null;
+  }, []);
+
+  const isMotionOverdueItem = useCallback((mt: EnrichedMotionTask) => {
+    if (['COMPLETED', 'APPROVED'].includes(mt.status_motion)) return false;
+    const dDate = getMotionDueDate(mt);
+    return isTaskOverdue(dDate, mt.status_motion);
+  }, [getMotionDueDate]);
+
+  const isMotionNeedsReview = useCallback((mt: EnrichedMotionTask) => {
+    return ['SUBMITTED', 'REVIEW', 'PENDING'].includes(mt.status_motion);
+  }, []);
+
+  const matchMotionSearch = useCallback((mt: EnrichedMotionTask) => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase().trim();
+    const taskCode = (mt.parentTask?.task_code || mt.id || '').toLowerCase();
+    const brand = (mt.parentTask?.client_name || allClients.find(c => c.id === mt.client_id)?.name || '').toLowerCase();
+    const picUser = motionUsers.find(u => u.id === mt.motion_pic_id);
+    const motionPic = (picUser?.full_name || '').toLowerCase();
+    const creatorUser = mt.parentTask?.created_by ? allUsers.find(u => u.id === mt.parentTask?.created_by) : null;
+    const creatorName = (creatorUser?.full_name || '').toLowerCase();
+    const campaign = (mt.parentTask?.campaign_name || mt.campaign_type || '').toLowerCase();
+    const studio = (mt.studio || '').toLowerCase();
+    const platform = (mt.platform || '').toLowerCase();
+    return taskCode.includes(q) || brand.includes(q) || motionPic.includes(q) || creatorName.includes(q) || campaign.includes(q) || studio.includes(q) || platform.includes(q);
+  }, [searchQuery, allClients, motionUsers, allUsers]);
+
+  // Scoped active motion tasks filtered by brand and text search
+  const baseScopedMotionTasks = useMemo(() => {
+    return motionTasks.filter(mt => {
+      if (mt.is_archived === true) return false;
+      const clientName = mt.parentTask?.client_name || allClients.find(c => c.id === mt.client_id)?.name || 'Unknown Client';
+      const matchesBrand = selectedBrand === 'all' || clientName === selectedBrand;
+      return matchMotionSearch(mt) && matchesBrand;
+    });
+  }, [motionTasks, matchMotionSearch, selectedBrand, allClients]);
+
+  // Dynamic real-time counts for the 3 Quick Filter Chips
+  const myAssignedCount = useMemo(() => {
+    return baseScopedMotionTasks.filter(isMyAssignedMotion).length;
+  }, [baseScopedMotionTasks, isMyAssignedMotion]);
+
+  const overdueCount = useMemo(() => {
+    return baseScopedMotionTasks.filter(isMotionOverdueItem).length;
+  }, [baseScopedMotionTasks, isMotionOverdueItem]);
+
+  const needsReviewCount = useMemo(() => {
+    return baseScopedMotionTasks.filter(isMotionNeedsReview).length;
+  }, [baseScopedMotionTasks, isMotionNeedsReview]);
+
+  // Final filtered motion tasks combining text search, brand dropdown, and quick filter chips
+  const filteredMotionTasks = useMemo(() => {
+    if (quickFilter === 'my_tasks') {
+      return baseScopedMotionTasks.filter(isMyAssignedMotion);
     }
-
-    // Role & User Filtering
-    let matchRoleAndUser = true;
-    if (filterUser !== 'all') {
-      if (filterRole === 'MOTION_PIC') {
-        matchRoleAndUser = mt.motion_pic_id === filterUser;
-      } else if (filterRole === 'REQUESTER') {
-        matchRoleAndUser = pt?.created_by === filterUser;
-      } else if (filterRole === 'STRATEGIC_PIC') {
-        matchRoleAndUser = pt?.strat_pic_id === filterUser || Boolean(pt?.strat_pic_ids && pt.strat_pic_ids.includes(filterUser));
-      } else if (filterRole === 'DESIGNER') {
-        matchRoleAndUser = pt?.design_pic_id === filterUser;
-      } else if (filterRole === 'OPERATOR') {
-        matchRoleAndUser = mt.operator_id === filterUser;
-      } else {
-        matchRoleAndUser = mt.motion_pic_id === filterUser ||
-          pt?.created_by === filterUser ||
-          mt.operator_id === filterUser ||
-          pt?.strat_pic_id === filterUser ||
-          Boolean(pt?.strat_pic_ids && pt.strat_pic_ids.includes(filterUser)) ||
-          pt?.design_pic_id === filterUser;
-      }
-    } else if (filterRole !== 'all') {
-      if (filterRole === 'MOTION_PIC') {
-        matchRoleAndUser = Boolean(mt.motion_pic_id);
-      } else if (filterRole === 'REQUESTER') {
-        matchRoleAndUser = Boolean(pt?.created_by);
-      } else if (filterRole === 'STRATEGIC_PIC') {
-        matchRoleAndUser = Boolean(pt?.strat_pic_id || (pt?.strat_pic_ids && pt.strat_pic_ids.length > 0) || pt?.requires_strategic_concept);
-      } else if (filterRole === 'DESIGNER') {
-        matchRoleAndUser = Boolean(pt?.design_pic_id);
-      } else if (filterRole === 'OPERATOR') {
-        matchRoleAndUser = Boolean(mt.operator_id);
-      }
+    if (quickFilter === 'overdue') {
+      return baseScopedMotionTasks.filter(isMotionOverdueItem);
     }
+    if (quickFilter === 'needs_review') {
+      return baseScopedMotionTasks.filter(isMotionNeedsReview);
+    }
+    return baseScopedMotionTasks;
+  }, [baseScopedMotionTasks, quickFilter, isMyAssignedMotion, isMotionOverdueItem, isMotionNeedsReview]);
 
-    return matchSearch && matchStatus && matchPic && matchClient && matchDate && matchRoleAndUser;
+  // Weekly Partition helpers for Active Motion Tasks
+  const activeWeeklyYear = useMemo(() => new Date().getFullYear(), []);
+  const activeWeeklyMonth = useMemo(() => new Date().getMonth() + 1, []);
+
+  const weeklyPartitions = useMemo(() => {
+    return getWeeklyPartitionsForMonth(activeWeeklyYear, activeWeeklyMonth);
+  }, [activeWeeklyYear, activeWeeklyMonth]);
+
+  const pastOverdueMotionTasks = useMemo(() => {
+    return filteredMotionTasks.filter(mt => {
+      const dDate = getMotionDueDate(mt);
+      if (!dDate) return false;
+      if (['COMPLETED', 'APPROVED'].includes(mt.status_motion)) return false;
+      const parts = dDate.split('T')[0].split('-');
+      if (parts.length < 3) return false;
+      const tYear = parseInt(parts[0], 10);
+      const tMonth = parseInt(parts[1], 10);
+      if (tYear < activeWeeklyYear || (tYear === activeWeeklyYear && tMonth < activeWeeklyMonth)) {
+        return true;
+      }
+      return false;
+    });
+  }, [filteredMotionTasks, getMotionDueDate, activeWeeklyYear, activeWeeklyMonth]);
+
+  const getWeeklyMotionTasksForPartition = useCallback((partitionKey: WeekPartitionKey) => {
+    return filteredMotionTasks.filter(mt => {
+      // Hanya untuk request yang telah di-approve
+      if (mt.status_motion !== 'APPROVED' && mt.status_motion !== 'COMPLETED') {
+        return false;
+      }
+      const dDate = getMotionDueDate(mt);
+      const part = getDueWeekPartition(dDate);
+      if (partitionKey === 'NO_DUE_DATE') {
+        return part === 'NO_DUE_DATE';
+      }
+      if (part !== partitionKey) return false;
+
+      if (dDate) {
+        const parts = dDate.split('T')[0].split('-');
+        if (parts.length >= 2) {
+          const tYear = parseInt(parts[0], 10);
+          const tMonth = parseInt(parts[1], 10);
+          return tYear === activeWeeklyYear && tMonth === activeWeeklyMonth;
+        }
+      }
+      return true;
+    });
+  }, [filteredMotionTasks, getMotionDueDate, activeWeeklyYear, activeWeeklyMonth]);
+
+  // Horizontal Scroll & Column Navigation for Motion Kanban
+  const kanbanScroll = useKanbanScroll({
+    storageKey: 'cmos_motion_kanban_width_mode',
+    defaultWidthMode: 'normal',
   });
+
+  const kanbanColumnInfos = useMemo(() => {
+    return MOTION_KANBAN_COLUMNS.map(col => {
+      const isWeekly = Boolean(col.isWeekly);
+      const colTasks = filteredMotionTasks.filter(mt => {
+        if (isWeekly) {
+          // Hanya untuk request yang telah di-approve
+          if (mt.status_motion !== 'APPROVED' && mt.status_motion !== 'COMPLETED') {
+            return false;
+          }
+          const dateStr = mt.due_date || mt.parentTask?.due_date || mt.created_at;
+          if (!dateStr) return false;
+          const d = new Date(dateStr);
+          if (isNaN(d.getTime())) return false;
+          if (d.getFullYear() !== activeWeeklyYear || (d.getMonth() + 1) !== activeWeeklyMonth) {
+            return false;
+          }
+          const day = d.getDate();
+          if (col.status === 'W1') return day >= 1 && day <= 7;
+          if (col.status === 'W2') return day >= 8 && day <= 14;
+          if (col.status === 'W3') return day >= 15 && day <= 21;
+          if (col.status === 'W4') return day >= 22;
+          return false;
+        }
+        return mt.status_motion === col.status;
+      });
+      return {
+        status: col.status,
+        label: col.label,
+        color: col.color,
+        count: colTasks.length,
+      };
+    });
+  }, [filteredMotionTasks, activeWeeklyYear, activeWeeklyMonth]);
 
   // Sorted list for active table view
   const sortedMotionTasks = [...filteredMotionTasks].sort((a, b) => {
@@ -722,397 +1041,535 @@ function MotionPageContent() {
 
   const handleResetFilters = () => {
     setSearchQuery('');
-    setFilterStatus('all');
-    setFilterRole('all');
-    setFilterUser('all');
-    setFilterPic('all');
-    setFilterClient('all');
-    setFilterMonths([]);
-    setFilterYears([]);
-    setFilterExactDate('');
+    setSelectedBrand('all');
+    setQuickFilter('all');
+    updateUrlParams({ q: '', brand: 'all', status: 'all' });
   };
 
   return (
     <div className="space-y-5">
-      {/* Top Header & Section Switcher Navigation */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 pb-4 border-b border-[var(--border-secondary)]">
-        <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)] flex items-center gap-2">
-            <span>Motion Graphics Pipeline</span>
-          </h1>
+      {/* Top Header & Section Navigation */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-[var(--border-secondary)]">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-[var(--bg-card)] border border-[var(--border-primary)] shadow-xs shrink-0">
+            <Film className="w-5 h-5 text-pink-500" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <h1 className="text-xl font-bold text-[var(--text-primary)]">
+                Motion Graphics Pipeline
+              </h1>
+              <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--bg-secondary)] border border-[var(--border-primary)] text-[var(--text-secondary)] shadow-xs">
+                {mainTab === 'active' 
+                  ? `${activeMotionTasksCount} Active` 
+                  : `${approvedMotionTasksCount} Approved`}
+              </span>
+            </div>
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">
+              Alur produksi animasi, video promosi & visual bergerak terintegrasi dengan handover desain.
+            </p>
+          </div>
         </div>
 
-        {/* Section Switcher Navigation */}
-        <div className="flex items-center p-1 bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-xl shadow-sm">
-          <button
-            onClick={() => setMainTab('active')}
-            className={`flex items-center gap-2 px-4 py-2 text-xs sm:text-sm font-semibold rounded-lg transition-all ${
-              mainTab === 'active'
-                ? 'bg-pink-600 text-white shadow-sm'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-            }`}
-          >
-            <LayoutGrid className="w-4 h-4" />
-            <span>Active Pipeline</span>
-            <span className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${mainTab === 'active' ? 'bg-white/20 text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)]'}`}>
-              {activeMotionTasksCount}
-            </span>
-          </button>
+        {/* Section Switcher Navigation & Action Controls */}
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          {/* Section Switcher: Active Pipeline vs Approved Archive */}
+          <div className="flex items-center p-1 bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-xl shadow-xs">
+            <button
+              onClick={() => setMainTab('active')}
+              className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                mainTab === 'active'
+                  ? 'bg-pink-600 text-white shadow-xs'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span>Active Pipeline</span>
+            </button>
 
-          <button
-            onClick={() => setMainTab('archive')}
-            className={`flex items-center gap-2 px-4 py-2 text-xs sm:text-sm font-semibold rounded-lg transition-all ${
-              mainTab === 'archive'
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
-            }`}
-          >
-            <FolderCheck className="w-4 h-4" />
-            <span>Approved Archive</span>
-            <span className={`text-[11px] px-2 py-0.5 rounded-full font-bold ${mainTab === 'archive' ? 'bg-white/20 text-white' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'}`}>
-              {approvedMotionTasksCount}
-            </span>
-          </button>
+            <button
+              onClick={() => setMainTab('archive')}
+              className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                mainTab === 'archive'
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+              }`}
+            >
+              <FolderCheck className="w-3.5 h-3.5" />
+              <span>Approved Archive</span>
+            </button>
+          </div>
+
+          {mainTab === 'active' && (
+            <>
+              {/* View Mode Toggle: Kanban | Weekly | Table */}
+              <div className="flex items-center bg-[var(--bg-secondary)] p-0.5 rounded-lg border border-[var(--border-primary)] shadow-xs">
+                <button
+                  type="button"
+                  onClick={() => setViewMode('kanban')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                    viewMode === 'kanban'
+                      ? 'bg-pink-600 text-white shadow-xs'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  }`}
+                  title="Kanban Board View"
+                >
+                  <LayoutGrid className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Kanban</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode('weekly')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                    viewMode === 'weekly'
+                      ? 'bg-pink-600 text-white shadow-xs'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  }`}
+                  title="Weekly Partition View (W1-W4)"
+                >
+                  <Calendar className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Weekly</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode('table')}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                    viewMode === 'table'
+                      ? 'bg-pink-600 text-white shadow-xs'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  }`}
+                  title="Table View"
+                >
+                  <List className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Table</span>
+                </button>
+              </div>
+
+              {/* Refresh Button */}
+              <button
+                type="button"
+                onClick={refresh}
+                className="p-2 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] border border-[var(--border-primary)] transition-colors shadow-xs"
+                title="Refresh Data"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Create Request Button */}
+              {['ADMIN', 'TEAM_LEAD', 'MOTION_PIC', 'REQUESTER'].includes(user.role_name) && (
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 h-[34px] rounded-lg text-xs font-semibold bg-pink-600 text-white hover:bg-pink-700 transition-colors shadow-xs"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Create Request</span>
+                </button>
+              )}
+            </>
+          )}
         </div>
       </div>
 
       {/* ================= 1. ACTIVE PIPELINE VIEW ================= */}
       {mainTab === 'active' && (
         <div className="space-y-4">
-          {/* Toolbar & Filters */}
-          <div className="bg-[var(--bg-card)] p-4 rounded-xl border border-[var(--border-primary)] shadow-sm flex flex-col gap-4">
-            
-            {/* Top Row: Search Bar & View Mode Toggle */}
-            <div className="flex flex-col sm:flex-row items-center gap-4">
-              <div className="relative flex-1 w-full">
-                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
-                <input 
-                  className="input pl-10 w-full text-xs" 
-                  placeholder="Search code, brand, campaign, PIC, studio, platform..."
-                  value={searchQuery} 
-                  onChange={(e) => setSearchQuery(e.target.value)} 
-                />
-              </div>
 
-              <div className="flex items-center gap-3 shrink-0">
-                {/* View Mode Toggle */}
-                <div className="flex items-center p-1 rounded-lg border border-[var(--border-primary)] bg-[var(--bg-secondary)]">
-                  <button
-                    onClick={() => setViewMode('kanban')}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
-                      viewMode === 'kanban'
-                        ? 'bg-pink-600 text-white shadow-sm'
-                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                    }`}
-                    title="Kanban Board View"
-                  >
-                    <LayoutGrid className="w-3.5 h-3.5" /> Kanban
-                  </button>
-                  <button
-                    onClick={() => setViewMode('table')}
-                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
-                      viewMode === 'table'
-                        ? 'bg-pink-600 text-white shadow-sm'
-                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                    }`}
-                    title="Table List View"
-                  >
-                    <List className="w-3.5 h-3.5" /> Table
-                  </button>
-                </div>
-
-                <button
-                  onClick={refresh}
-                  className="btn-ghost p-2 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] border border-[var(--border-primary)]"
-                  title="Refresh Data"
-                >
-                  <RefreshCw className="w-4 h-4" />
-                </button>
-              </div>
+          {/* Read-Only Mode Banner */}
+          {isReadOnly && (
+            <div className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-400 text-xs font-semibold shadow-sm animate-fade-in">
+              <Eye className="w-4 h-4 shrink-0 text-amber-400" />
+              <span>
+                Mode Read-Only: Anda sedang memantau Motion Graphics Pipeline dalam mode pantau (view-only). Pengelolaan pengerjaan dan perubahan status hanya dapat dilakukan oleh Tim Motion.
+              </span>
             </div>
+          )}
 
-            {/* Bottom Row: Unified Filter Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-3 mt-1 border-t border-[var(--border-secondary)]">
-              <div className="flex items-center gap-2.5 flex-1 overflow-x-auto custom-scrollbar py-0.5 max-w-full">
-                {/* Filter Group: Unified Pill (Always straight / 1 row) */}
-                <div className="inline-flex items-center flex-nowrap bg-[var(--bg-secondary)] rounded-lg border border-[var(--border-primary)] shadow-sm shrink-0">
-                  
-                  {/* Month Dropdown */}
-                  <div className="relative" ref={monthDropdownRef}>
-                    <button 
-                      onClick={() => { setShowMonthDropdown(!showMonthDropdown); setShowYearDropdown(false); }}
-                      className="px-3 py-2 h-[36px] flex items-center justify-between min-w-[120px] bg-transparent hover:bg-[var(--bg-tertiary)] rounded-l-lg transition-colors text-xs font-medium text-[var(--text-primary)]"
-                    >
-                      <span>
-                        {filterMonths.length === 0 ? 'All Months' : filterMonths.length === 1 ? getMonthName(filterMonths[0]) : `${filterMonths.length} Bulan`}
-                      </span>
-                      <ChevronDown className="w-3.5 h-3.5 ml-1.5 opacity-50" />
-                    </button>
-                    {showMonthDropdown && (
-                      <div className="absolute top-full left-0 mt-2 w-48 bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-lg shadow-xl z-50 max-h-64 overflow-y-auto">
-                        <div className="p-2 border-b border-[var(--border-primary)] sticky top-0 bg-[var(--bg-secondary)]">
-                          <label className="flex items-center gap-2 p-1.5 hover:bg-[var(--bg-tertiary)] rounded cursor-pointer text-xs font-medium">
-                            <input 
-                              type="checkbox" 
-                              checked={filterMonths.length === 12}
-                              onChange={(e) => {
-                                if (e.target.checked) setFilterMonths(allMonths);
-                                else setFilterMonths([]);
-                                setFilterExactDate('');
-                              }}
-                              className="rounded border-[var(--border-primary)]"
-                            />
-                            <span>Pilih Semua Bulan</span>
-                          </label>
-                        </div>
-                        <div className="p-1">
-                          {allMonths.map(m => (
-                            <label key={m} className="flex items-center gap-2 p-2 hover:bg-[var(--bg-tertiary)] rounded cursor-pointer text-xs">
-                              <input 
-                                type="checkbox" 
-                                checked={filterMonths.includes(m)}
-                                onChange={(e) => {
-                                  if (e.target.checked) setFilterMonths([...filterMonths, m]);
-                                  else setFilterMonths(filterMonths.filter(x => x !== m));
-                                  setFilterExactDate('');
-                                }}
-                                className="rounded border-[var(--border-primary)]"
-                              />
-                              <span>{getMonthName(m)}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="w-px h-4 bg-[var(--border-primary)]" />
-
-                  {/* Year Dropdown */}
-                  <div className="relative" ref={yearDropdownRef}>
-                    <button 
-                      onClick={() => { setShowYearDropdown(!showYearDropdown); setShowMonthDropdown(false); }}
-                      className="px-3 py-2 h-[36px] flex items-center justify-between min-w-[100px] bg-transparent hover:bg-[var(--bg-tertiary)] transition-colors text-xs font-medium text-[var(--text-primary)]"
-                    >
-                      <span>
-                        {filterYears.length === 0 ? 'All Years' : filterYears.length === 1 ? filterYears[0] : `${filterYears.length} Tahun`}
-                      </span>
-                      <ChevronDown className="w-3.5 h-3.5 ml-1.5 opacity-50" />
-                    </button>
-                    {showYearDropdown && (
-                      <div className="absolute top-full left-0 mt-2 w-44 bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-lg shadow-xl z-50 max-h-64 overflow-y-auto">
-                        <div className="p-2 border-b border-[var(--border-primary)] sticky top-0 bg-[var(--bg-secondary)]">
-                          <label className="flex items-center gap-2 p-1.5 hover:bg-[var(--bg-tertiary)] rounded cursor-pointer text-xs font-medium">
-                            <input 
-                              type="checkbox" 
-                              checked={filterYears.length === availableYears.length}
-                              onChange={(e) => {
-                                if (e.target.checked) setFilterYears(availableYears);
-                                else setFilterYears([]);
-                                setFilterExactDate('');
-                              }}
-                              className="rounded border-[var(--border-primary)]"
-                            />
-                            <span>Pilih Semua</span>
-                          </label>
-                        </div>
-                        <div className="p-1">
-                          {availableYears.map(y => (
-                            <label key={y} className="flex items-center gap-2 p-2 hover:bg-[var(--bg-tertiary)] rounded cursor-pointer text-xs">
-                              <input 
-                                type="checkbox" 
-                                checked={filterYears.includes(y)}
-                                onChange={(e) => {
-                                  if (e.target.checked) setFilterYears([...filterYears, y]);
-                                  else setFilterYears(filterYears.filter(x => x !== y));
-                                  setFilterExactDate('');
-                                }}
-                                className="rounded border-[var(--border-primary)]"
-                              />
-                              <span>{y}</span>
-                            </label>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  
-                  <div className="w-px h-4 bg-[var(--border-primary)]" />
-
-                  {/* Exact Date Input */}
-                  <div className="flex items-center">
-                    <input 
-                      type="date" 
-                      className="px-3 py-1.5 h-[36px] text-xs bg-transparent border-none focus:outline-none min-w-[130px] hover:bg-[var(--bg-tertiary)] text-[var(--text-primary)]" 
-                      value={filterExactDate} 
-                      onChange={(e) => setFilterExactDate(e.target.value)} 
-                      title="Filter by Exact Date (Overrides Month)"
-                    />
-                  </div>
-
-                  <div className="w-px h-4 bg-[var(--border-primary)]" />
-
-                  {/* Status Dropdown */}
-                  <div className="flex items-center">
-                    <select 
-                      className="px-3 py-1.5 h-[36px] text-xs bg-transparent border-none focus:outline-none min-w-[130px] hover:bg-[var(--bg-tertiary)] cursor-pointer text-[var(--text-primary)]" 
-                      value={filterStatus} 
-                      onChange={(e) => setFilterStatus(e.target.value)}
-                    >
-                      <option value="all" className="bg-[var(--bg-secondary)]">All Status</option>
-                      {Object.entries(MOTION_STATUS_LABELS).map(([k, v]) => (
-                        <option key={k} value={k} className="bg-[var(--bg-secondary)]">{v}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="w-px h-4 bg-[var(--border-primary)]" />
-
-                  {/* Role Dropdown */}
-                  <div className="flex items-center">
-                    <select 
-                      className="px-3 py-1.5 h-[36px] text-xs bg-transparent border-none focus:outline-none min-w-[120px] hover:bg-[var(--bg-tertiary)] cursor-pointer text-[var(--text-primary)]" 
-                      value={filterRole} 
-                      onChange={(e) => {
-                        setFilterRole(e.target.value);
-                        setFilterUser('all');
-                      }}
-                    >
-                      <option value="all" className="bg-[var(--bg-secondary)]">Semua Role</option>
-                      <option value="MOTION_PIC" className="bg-[var(--bg-secondary)]">Motion PIC</option>
-                      <option value="REQUESTER" className="bg-[var(--bg-secondary)]">Requester</option>
-                      <option value="STRATEGIC_PIC" className="bg-[var(--bg-secondary)]">Strategic PIC</option>
-                      <option value="DESIGNER" className="bg-[var(--bg-secondary)]">Graphic Designer</option>
-                      <option value="OPERATOR" className="bg-[var(--bg-secondary)]">Operator</option>
-                    </select>
-                  </div>
-
-                  <div className="w-px h-4 bg-[var(--border-primary)]" />
-
-                  {/* Name / User Dropdown */}
-                  <div className="flex items-center">
-                    <select 
-                      className="px-3 py-1.5 h-[36px] text-xs bg-transparent border-none focus:outline-none min-w-[130px] hover:bg-[var(--bg-tertiary)] cursor-pointer text-[var(--text-primary)]" 
-                      value={filterUser} 
-                      onChange={(e) => setFilterUser(e.target.value)}
-                    >
-                      <option value="all" className="bg-[var(--bg-secondary)]">Semua Nama / PIC</option>
-                      {motionUserOptions.map(u => (
-                        <option key={u.id} value={u.id} className="bg-[var(--bg-secondary)]">
-                          {u.full_name} {filterRole === 'all' && u.role_name ? `(${u.role_name})` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="w-px h-4 bg-[var(--border-primary)]" />
-
-                  {/* Client / Brand Dropdown */}
-                  <div className="flex items-center">
-                    <select 
-                      className="px-3 py-1.5 h-[36px] text-xs bg-transparent border-none focus:outline-none min-w-[130px] rounded-r-lg hover:bg-[var(--bg-tertiary)] cursor-pointer text-[var(--text-primary)]" 
-                      value={filterClient} 
-                      onChange={(e) => setFilterClient(e.target.value)}
-                    >
-                      <option value="all" className="bg-[var(--bg-secondary)]">All Brands</option>
-                      {allClients.map(c => (
-                        <option key={c.id} value={c.name} className="bg-[var(--bg-secondary)]">{c.name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                </div>
-
-                {(searchQuery || filterStatus !== 'all' || filterRole !== 'all' || filterUser !== 'all' || filterPic !== 'all' || filterClient !== 'all' || filterMonths.length > 0 || filterYears.length > 0 || filterExactDate) && (
-                  <button 
-                    onClick={handleResetFilters} 
-                    className="btn-ghost text-xs py-1.5 px-3 text-[var(--text-muted)] hover:text-red-400"
+          {/* Filter Bar (Stitch Design Specification) */}
+          <div className="flex flex-wrap lg:flex-nowrap items-center justify-between gap-3 p-3 bg-[var(--bg-card)] rounded-xl border border-[var(--border-primary)] shadow-sm mb-6">
+            {/* Sisi Kiri: Search Input & Brand Dropdown */}
+            <div className="flex flex-wrap sm:flex-nowrap items-center gap-2.5 flex-1 min-w-[280px]">
+              {/* Text Search Bar */}
+              <div className="relative flex items-center flex-1 max-w-md min-w-[220px]">
+                {!searchQuery && (
+                  <Search className="absolute left-3.5 w-4 h-4 text-[var(--text-muted)] pointer-events-none transition-opacity duration-150" />
+                )}
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => handleSearchChange(e.target.value)}
+                  placeholder="Filter task code (REQ-...), brand, PIC..."
+                  style={{
+                    paddingLeft: searchQuery ? '14px' : '38px',
+                    paddingRight: searchQuery ? '32px' : '12px',
+                  }}
+                  className="h-[34px] w-full bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-lg text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-pink)] transition-all"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => handleSearchChange('')}
+                    className="absolute right-2.5 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+                    title="Clear search"
                   >
-                    Reset Filter
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 )}
               </div>
 
-              {['ADMIN', 'TEAM_LEAD', 'MOTION_PIC', 'REQUESTER'].includes(user.role_name) && (
-                <button 
-                  onClick={() => setShowCreateModal(true)} 
-                  className="btn-primary shrink-0" 
-                  style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '0 16px', height: '36px', borderRadius: '8px', fontWeight: '600', background: 'var(--accent-pink)', borderColor: 'var(--accent-pink)', fontSize: '12px' }}
+              {/* Brand Dropdown */}
+              <div className="relative flex items-center h-[34px] px-3 bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-lg hover:border-[var(--border-secondary)] transition-colors">
+                <span className="text-[var(--text-muted)] uppercase font-semibold text-[11px] mr-2 shrink-0">BRAND:</span>
+                <select
+                  value={selectedBrand}
+                  onChange={(e) => handleBrandChange(e.target.value)}
+                  className="bg-transparent text-[var(--text-primary)] font-medium text-xs focus:outline-none cursor-pointer pr-5 appearance-none"
                 >
-                  <Plus className="w-4 h-4" /> <span>Create Request</span>
-                </button>
-              )}
+                  <option value="all" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">All Brands</option>
+                  {availableBrands.map((b) => (
+                    <option key={b} value={b} className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">
+                      {b}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="w-3.5 h-3.5 text-[var(--text-muted)] pointer-events-none absolute right-2.5" />
+              </div>
+            </div>
+
+            {/* Sisi Kanan: Quick Filter Chips */}
+            <div className="flex items-center gap-2 shrink-0">
+              {/* My Assigned Tasks */}
+              <button
+                type="button"
+                onClick={() => handleQuickFilterToggle('my_tasks')}
+                className={`h-[30px] px-3 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
+                  quickFilter === 'my_tasks'
+                    ? 'bg-pink-500/20 border border-pink-500 text-pink-400 font-semibold shadow-sm'
+                    : 'bg-[var(--bg-secondary)] border border-[var(--border-primary)] hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                <span>My Assigned Tasks ({myAssignedCount})</span>
+              </button>
+
+              {/* Overdue Tasks */}
+              <button
+                type="button"
+                onClick={() => handleQuickFilterToggle('overdue')}
+                className={`h-[30px] px-3 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
+                  quickFilter === 'overdue'
+                    ? 'bg-red-950/80 border border-red-500 text-red-400 font-semibold shadow-sm'
+                    : 'bg-[var(--bg-secondary)] border border-[var(--border-primary)] hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
+                <span>• Overdue ({overdueCount})</span>
+              </button>
+
+              {/* Needs Review */}
+              <button
+                type="button"
+                onClick={() => handleQuickFilterToggle('needs_review')}
+                className={`h-[30px] px-3 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
+                  quickFilter === 'needs_review'
+                    ? 'bg-amber-500/20 border border-amber-500 text-amber-400 font-semibold shadow-sm'
+                    : 'bg-[var(--bg-secondary)] border border-[var(--border-primary)] hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                <span>Needs Review ({needsReviewCount})</span>
+              </button>
             </div>
           </div>
 
           {/* VIEW MODE 1: KANBAN BOARD VIEW */}
           {viewMode === 'kanban' && (
-            <div className="kanban-board-wrapper" style={{ minHeight: 520 }}>
-              {MOTION_KANBAN_COLUMNS.map((col, colIdx) => {
-                const colTasks = filteredMotionTasks.filter(mt => mt.status_motion === col.status);
-                const isTargetOver = dragOverMotionCol === col.status;
-                return (
-                  <div 
-                    key={col.status || colIdx} 
-                    onDragOver={(e) => handleDragOver(e, col.status)}
-                    onDragLeave={(e) => handleDragLeave(e, col.status)}
-                    onDrop={(e) => handleDrop(e, col.status)}
-                    className={`kanban-column flex-shrink-0 w-[320px] scroll-snap-align-start transition-all duration-200 flex flex-col ${
-                      isTargetOver ? 'ring-2 ring-[var(--accent-pink)] bg-[var(--bg-tertiary)]/60 shadow-lg scale-[1.01]' : ''
-                    }`}
-                  >
-                    <div className="p-4 flex items-center justify-between border-b border-[var(--border-secondary)]">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2.5 h-2.5 rounded-full" style={{ background: col.color, boxShadow: `0 0 8px ${col.color}` }} />
-                        <span className="text-sm font-bold text-[var(--text-primary)]">{col.label}</span>
+            <div className="space-y-2">
+              <KanbanScrollToolbar
+                columns={kanbanColumnInfos}
+                canScrollLeft={kanbanScroll.canScrollLeft}
+                canScrollRight={kanbanScroll.canScrollRight}
+                onScrollLeft={kanbanScroll.scrollLeft}
+                onScrollRight={kanbanScroll.scrollRight}
+                onScrollToColumn={kanbanScroll.scrollToColumn}
+                columnWidthMode={kanbanScroll.columnWidthMode}
+                onToggleWidthMode={kanbanScroll.toggleWidthMode}
+              />
+
+              <div className="relative group">
+                <KanbanFloatingArrows
+                  canScrollLeft={kanbanScroll.canScrollLeft}
+                  canScrollRight={kanbanScroll.canScrollRight}
+                  onScrollLeft={kanbanScroll.scrollLeft}
+                  onScrollRight={kanbanScroll.scrollRight}
+                />
+
+                <div 
+                  ref={kanbanScroll.containerRef}
+                  onWheel={kanbanScroll.handleWheel}
+                  className="kanban-scroll-container pb-6 cursor-default" 
+                  style={{ minHeight: 520 }}
+                >
+                  {MOTION_KANBAN_COLUMNS.map((col, colIdx) => {
+                    const isWeekly = Boolean(col.isWeekly);
+                    const colTasks = filteredMotionTasks.filter(mt => {
+                      if (isWeekly) {
+                        // Hanya untuk request yang telah di-approve
+                        if (mt.status_motion !== 'APPROVED' && mt.status_motion !== 'COMPLETED') {
+                          return false;
+                        }
+                        const dateStr = mt.due_date || mt.parentTask?.due_date || mt.created_at;
+                        if (!dateStr) return false;
+                        const d = new Date(dateStr);
+                        if (isNaN(d.getTime())) return false;
+                        if (d.getFullYear() !== activeWeeklyYear || (d.getMonth() + 1) !== activeWeeklyMonth) {
+                          return false;
+                        }
+                        const day = d.getDate();
+                        if (col.status === 'W1') return day >= 1 && day <= 7;
+                        if (col.status === 'W2') return day >= 8 && day <= 14;
+                        if (col.status === 'W3') return day >= 15 && day <= 21;
+                        if (col.status === 'W4') return day >= 22;
+                        return false;
+                      }
+                      return mt.status_motion === col.status;
+                    });
+                    const isTargetOver = dragOverMotionCol === col.status;
+                    return (
+                      <div 
+                        key={col.status || colIdx} 
+                        data-column-status={col.status}
+                        onDragOver={(e) => handleDragOver(e, col.status)}
+                        onDragLeave={(e) => handleDragLeave(e, col.status)}
+                        onDrop={(e) => handleDrop(e, col.status)}
+                        className={`kanban-column flex-shrink-0 ${
+                          kanbanScroll.columnWidthMode === 'compact' ? 'w-[260px]' : 'w-[320px]'
+                        } scroll-snap-align-start transition-all duration-200 flex flex-col ${
+                          isTargetOver ? 'ring-2 ring-[var(--accent-pink)] bg-[var(--bg-tertiary)]/60 shadow-lg scale-[1.01]' : ''
+                        } ${isWeekly ? 'border-l-2 border-l-purple-500/30' : ''}`}
+                      >
+                        <div className="p-4 flex items-center justify-between border-b border-[var(--border-secondary)]">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2.5 h-2.5 rounded-full" style={{ background: col.color, boxShadow: `0 0 8px ${col.color}` }} />
+                            <span className="text-sm font-bold text-[var(--text-primary)]">{col.label}</span>
+                            {isWeekly && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded font-mono font-bold bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                                Weekly (Approved)
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {(col.status === 'APPROVED' || col.status === 'COMPLETED') && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setMainTab('archive');
+                                }}
+                                className="text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 hover:underline transition-all cursor-pointer"
+                                title="Buka Halaman Arsip Terpusat"
+                              >
+                                <span>Arsip</span>
+                                <ArrowRight className="w-3 h-3" />
+                              </button>
+                            )}
+                            <span className="text-xs px-2.5 py-0.5 rounded-md font-semibold bg-[var(--bg-card)] border border-[var(--border-primary)] text-[var(--text-secondary)]">
+                              {colTasks.length}
+                            </span>
+                          </div>
+                        </div>
+                        <div className={`p-3 flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-3 transition-colors ${isTargetOver ? 'bg-[var(--accent-pink)]/5' : ''}`}>
+                          {colTasks.length === 0 && (
+                            <div className={`empty-state mt-4 p-6 rounded-xl transition-all ${
+                              isTargetOver ? 'border-2 border-dashed border-[var(--accent-pink)] bg-[var(--accent-pink)]/10' : ''
+                            }`}>
+                              <Film className="w-8 h-8" style={{ color: isTargetOver ? 'var(--accent-pink)' : 'var(--border-primary)' }} />
+                              <p className="text-xs font-medium mt-2" style={{ color: isTargetOver ? 'var(--accent-pink)' : 'var(--text-muted)' }}>
+                                {isTargetOver 
+                                  ? (isWeekly ? 'Lepas di sini untuk menjadwalkan ke minggu ini' : 'Lepas di sini untuk pindah status')
+                                  : (isWeekly ? 'Tidak ada task approved pada minggu ini' : 'Antrean Kosong')}
+                              </p>
+                            </div>
+                          )}
+                          {colTasks.map((mt) => {
+                            const isMovable = !isReadOnly && canMoveMotionTask(mt);
+                            const isBeingDragged = draggedMotionId === mt.id;
+                            const clientName = mt.parentTask?.client_name || allClients.find(c => c.id === mt.client_id)?.name || 'Unknown Client';
+                            const picUser = motionUsers.find(u => u.id === mt.motion_pic_id);
+
+                            return (
+                              <MotionKanbanCard
+                                key={mt.id}
+                                mt={mt}
+                                isMovable={isMovable}
+                                isBeingDragged={isBeingDragged}
+                                isReadOnly={isReadOnly}
+                                clientName={clientName}
+                                picUser={picUser}
+                                user={user}
+                                onDragStart={(e) => handleDragStart(e, mt)}
+                                onDragEnd={() => { setDraggedMotionId(null); setDragOverMotionCol(null); }}
+                                onClick={() => setShowDetail(mt)}
+                                onEdit={(id) => setShowEditModal(id)}
+                                onAssign={(id) => setShowAssign(id)}
+                                onStatusChange={(id, newStatus) => handleStatusChange(id, newStatus)}
+                                onSubmit={(id) => setShowSubmitModal(id)}
+                                onRevision={(id) => setShowRevisionModal(id)}
+                                onHandover={(id) => setShowHandoverModal(id)}
+                                onUndo={(id, prevStatus) => handleStatusChange(id, prevStatus)}
+                                onDelete={handleDeleteMotionTask}
+                              />
+                            );
+                          })}
+                        </div>
                       </div>
-                      <span className="text-xs px-2.5 py-0.5 rounded-md font-semibold bg-[var(--bg-card)] border border-[var(--border-primary)] text-[var(--text-secondary)]">
-                        {colTasks.length}
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* VIEW MODE: WEEKLY PARTITION VIEW (W1 - W4 & NO DUE DATE) */}
+          {viewMode === 'weekly' && (
+            <div className="space-y-4">
+              {/* Overdue Past Notice if motion tasks from prior months are overdue */}
+              {pastOverdueMotionTasks.length > 0 && (
+                <div className="flex items-center justify-between p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs shadow-sm">
+                  <div className="flex items-center gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <span>
+                      <strong>Perhatian:</strong> Terdapat <strong>{pastOverdueMotionTasks.length} motion task aktif terlambat</strong> dengan tenggat waktu bulan sebelumnya yang belum selesai.
+                    </span>
+                  </div>
+                  <span className="text-[11px] font-mono bg-rose-500/20 text-rose-200 px-2 py-0.5 rounded-md">
+                    Overdue Lampau
+                  </span>
+                </div>
+              )}
+
+              <div className="kanban-board-wrapper" style={{ minHeight: 520 }}>
+                {/* Past Overdue Column if any */}
+                {pastOverdueMotionTasks.length > 0 && (
+                  <div className="kanban-column flex-shrink-0 w-[320px] scroll-snap-align-start flex flex-col rounded-2xl border border-rose-500/30 bg-[var(--bg-card)] shadow-sm overflow-hidden">
+                    <div className="p-4 flex items-center justify-between border-b border-rose-500/20 bg-rose-950/20">
+                      <div className="flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-rose-400" />
+                        <div>
+                          <h4 className="text-sm font-bold text-rose-300">Overdue Lampau</h4>
+                          <p className="text-[11px] text-rose-400/80">Deadline Sebelum Bulan Ini</p>
+                        </div>
+                      </div>
+                      <span className="text-xs px-2.5 py-0.5 rounded-md font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                        {pastOverdueMotionTasks.length}
                       </span>
                     </div>
-                    <div className={`p-3 flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-3 transition-colors ${isTargetOver ? 'bg-[var(--accent-pink)]/5' : ''}`}>
-                      {colTasks.length === 0 && (
-                        <div className={`empty-state mt-4 p-6 rounded-xl transition-all ${
-                          isTargetOver ? 'border-2 border-dashed border-[var(--accent-pink)] bg-[var(--accent-pink)]/10' : ''
-                        }`}>
-                          <Film className="w-8 h-8" style={{ color: isTargetOver ? 'var(--accent-pink)' : 'var(--border-primary)' }} />
-                          <p className="text-xs font-medium mt-2" style={{ color: isTargetOver ? 'var(--accent-pink)' : 'var(--text-muted)' }}>
-                            {isTargetOver ? 'Lepas di sini untuk pindah status' : 'Antrean Kosong'}
-                          </p>
-                        </div>
-                      )}
-                      {colTasks.map((mt) => {
-                        const isMovable = canMoveMotionTask(mt);
-                        const isBeingDragged = draggedMotionId === mt.id;
+                    <div className="p-3 flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-3">
+                      {pastOverdueMotionTasks.map(mt => {
                         const clientName = mt.parentTask?.client_name || allClients.find(c => c.id === mt.client_id)?.name || 'Unknown Client';
                         const picUser = motionUsers.find(u => u.id === mt.motion_pic_id);
-
                         return (
                           <MotionKanbanCard
                             key={mt.id}
                             mt={mt}
-                            isMovable={isMovable}
-                            isBeingDragged={isBeingDragged}
+                            isMovable={false}
+                            isBeingDragged={false}
+                            isArchive={false}
+                            isReadOnly={isReadOnly}
                             clientName={clientName}
                             picUser={picUser}
                             user={user}
-                            onDragStart={(e) => handleDragStart(e, mt)}
-                            onDragEnd={() => { setDraggedMotionId(null); setDragOverMotionCol(null); }}
-                            onClick={() => setShowDetail(mt)}
+                            onClick={() => { setShowDetail(mt); setDetailInitialTab('details'); }}
                             onEdit={(id) => setShowEditModal(id)}
                             onAssign={(id) => setShowAssign(id)}
-                            onStatusChange={(id, newStatus) => handleStatusChange(id, newStatus)}
+                            onStatusChange={(id, status) => handleStatusChange(id, status)}
                             onSubmit={(id) => setShowSubmitModal(id)}
                             onRevision={(id) => setShowRevisionModal(id)}
                             onHandover={(id) => setShowHandoverModal(id)}
                             onUndo={(id, prevStatus) => handleStatusChange(id, prevStatus)}
+                            onRestore={handleRestoreMotionTask}
+                            onDelete={handleDeleteMotionTask}
                           />
                         );
                       })}
                     </div>
                   </div>
-                );
-              })}
+                )}
+
+                {/* Standard Weekly Partitions: W1, W2, W3, W4, NO_DUE_DATE */}
+                {weeklyPartitions.map(col => {
+                  const colTasks = getWeeklyMotionTasksForPartition(col.key);
+                  const overdueCount = colTasks.filter(mt => {
+                    const dDate = getMotionDueDate(mt);
+                    return isTaskOverdue(dDate, mt.status_motion);
+                  }).length;
+
+                  return (
+                    <div
+                      key={col.key}
+                      className="kanban-column flex-shrink-0 w-[320px] scroll-snap-align-start flex flex-col rounded-2xl border border-[var(--border-primary)] bg-[var(--bg-card)] shadow-sm overflow-hidden"
+                    >
+                      <div className="p-4 flex items-center justify-between border-b border-[var(--border-secondary)] bg-[var(--bg-secondary)]">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <Calendar className="w-4 h-4 text-pink-400" />
+                            <span className="text-sm font-bold text-[var(--text-primary)]">{col.title}</span>
+                          </div>
+                          <p className="text-[11px] font-medium text-[var(--text-muted)] mt-0.5">
+                            {col.dateRange}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          {overdueCount > 0 && (
+                            <span className="text-[10px] font-semibold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/20" title={`${overdueCount} motion task terlambat`}>
+                              {overdueCount} Overdue
+                            </span>
+                          )}
+                          <span className="text-xs px-2.5 py-0.5 rounded-md font-semibold bg-[var(--bg-card)] border border-[var(--border-primary)] text-[var(--text-secondary)]">
+                            {colTasks.length}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="p-3 flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-3">
+                        {colTasks.length === 0 ? (
+                          <div className="empty-state mt-4 p-6 rounded-xl border border-dashed border-[var(--border-secondary)] bg-[var(--bg-secondary)]/30 text-[var(--text-muted)]">
+                            <Calendar className="w-8 h-8 opacity-30 mx-auto mb-2" />
+                            <p className="text-xs font-semibold text-[var(--text-secondary)]">Antrean Kosong</p>
+                            <p className="text-[11px] opacity-70 mt-0.5">Tidak ada motion card pada {col.label}</p>
+                          </div>
+                        ) : (
+                          colTasks.map(mt => {
+                            const clientName = mt.parentTask?.client_name || allClients.find(c => c.id === mt.client_id)?.name || 'Unknown Client';
+                            const picUser = motionUsers.find(u => u.id === mt.motion_pic_id);
+                            return (
+                              <MotionKanbanCard
+                                key={mt.id}
+                                mt={mt}
+                                isMovable={false}
+                                isBeingDragged={false}
+                                isArchive={false}
+                                isReadOnly={isReadOnly}
+                                clientName={clientName}
+                                picUser={picUser}
+                                user={user}
+                                onClick={() => { setShowDetail(mt); setDetailInitialTab('details'); }}
+                                onEdit={(id) => setShowEditModal(id)}
+                                onAssign={(id) => setShowAssign(id)}
+                                onStatusChange={(id, status) => handleStatusChange(id, status)}
+                                onSubmit={(id) => setShowSubmitModal(id)}
+                                onRevision={(id) => setShowRevisionModal(id)}
+                                onHandover={(id) => setShowHandoverModal(id)}
+                                onUndo={(id, prevStatus) => handleStatusChange(id, prevStatus)}
+                                onRestore={handleRestoreMotionTask}
+                                onDelete={handleDeleteMotionTask}
+                              />
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
@@ -1396,21 +1853,28 @@ function MotionPageContent() {
             {/* Top Row: Search & Export */}
             <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
               <div className="relative flex-1">
-                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
+                {!archiveSearch && (
+                  <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)] pointer-events-none transition-opacity duration-150" />
+                )}
                 <input
                   type="text"
-                  className="input pl-10 w-full"
+                  className="input w-full transition-all"
                   placeholder="Search Motion (Kode, Brand, Campaign, PIC, Studio, Platform)..."
                   value={archiveSearch}
                   onChange={(e) => {
                     setArchiveSearch(e.target.value);
                     setArchivePage(1);
                   }}
+                  style={{
+                    paddingLeft: archiveSearch ? '14px' : '38px',
+                    paddingRight: archiveSearch ? '32px' : '12px',
+                  }}
                 />
                 {archiveSearch && (
                   <button
                     onClick={() => { setArchiveSearch(''); setArchivePage(1); }}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+                    title="Clear search"
                   >
                     <X className="w-4 h-4" />
                   </button>
@@ -1689,6 +2153,8 @@ function MotionPageContent() {
                                 clientName={clientName}
                                 picUser={picUser}
                                 user={user}
+                                onRestore={handleRestoreMotionTask}
+                                onDelete={handleDeleteMotionTask}
                                 onClick={() => {
                                   setShowDetail(mt);
                                   setDetailInitialTab('details');
@@ -1837,16 +2303,27 @@ function MotionPageContent() {
                               )}
                             </td>
                             <td className="text-right" onClick={(e) => e.stopPropagation()}>
-                              <button
-                                onClick={() => {
-                                  setShowDetail(mt);
-                                  setDetailInitialTab('details');
-                                }}
-                                className="btn-ghost p-1.5 rounded-lg text-emerald-400 hover:bg-emerald-500/10"
-                                title="Lihat Detail Arsip Motion"
-                              >
-                                <Eye className="w-4 h-4" />
-                              </button>
+                              <div className="flex items-center justify-end gap-1.5">
+                                <button
+                                  onClick={() => {
+                                    setShowDetail(mt);
+                                    setDetailInitialTab('details');
+                                  }}
+                                  className="btn-ghost p-1.5 rounded-lg text-emerald-400 hover:bg-emerald-500/10"
+                                  title="Lihat Detail Arsip Motion"
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </button>
+                                {user && canUserRestoreTask(user.role_name, user.id, mt) && (
+                                  <button
+                                    onClick={() => handleRestoreMotionTask(mt.id)}
+                                    className="btn-ghost p-1.5 rounded-lg text-emerald-400 hover:bg-emerald-500/10"
+                                    title="Pulihkan Card Motion ke Board Aktif (Restore)"
+                                  >
+                                    <RotateCcw className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1916,20 +2393,19 @@ function MotionPageContent() {
           user={user}
           allUsers={allUsers}
           allClients={allClients}
+          allTasks={allTasks}
           initialTab={detailInitialTab}
-          onClose={() => {
-            setShowDetail(null);
-            setDetailInitialTab('details');
-            if (taskIdParam) {
-              window.history.replaceState(null, '', window.location.pathname);
-            }
-          }}
+          onClose={handleCloseAnyModal}
           onRefresh={refresh}
-          onAssign={() => setShowAssign(showDetail.id)}
-          onSubmit={() => setShowSubmitModal(showDetail.id)}
-          onRevise={() => setShowRevisionModal(showDetail.id)}
-          onHandover={() => setShowHandoverModal(showDetail.id)}
-          onEdit={() => setShowEditModal(showDetail.id)}
+          onAssign={() => switchModal('ASSIGN', { taskId: showDetail.id })}
+          onSubmit={() => switchModal('SUBMIT', { taskId: showDetail.id })}
+          onRevise={() => switchModal('REVISION', { taskId: showDetail.id })}
+          onHandover={() => switchModal('HANDOVER', { taskId: showDetail.id })}
+          onEdit={() => switchModal('EDIT', { taskId: showDetail.id })}
+          onApprove={async () => {
+            await handleStatusChange(showDetail.id, 'APPROVED');
+            handleCloseAnyModal();
+          }}
         />
       )}
 
@@ -1940,14 +2416,16 @@ function MotionPageContent() {
           currentTask={motionTasks.find(t => t.id === showAssign)}
           motionUsers={motionUsers}
           userId={user.id}
-          onClose={() => { setShowAssign(null); refresh(); }}
+          userRole={user.role_name}
+          targetStatus={assignTargetStatus}
+          onClose={handleCloseAnyModal}
         />
       )}
 
       {/* ================= MODAL 3: CREATE / EDIT MOTION REQUEST MODAL ================= */}
       {showCreateModal && (
         <MotionFormModal 
-          onClose={() => { setShowCreateModal(false); refresh(); }} 
+          onClose={handleCloseAnyModal} 
           userId={user.id} 
           clients={allClients} 
           motionUsers={motionUsers} 
@@ -1955,7 +2433,7 @@ function MotionPageContent() {
       )}
       {showEditModal && (
         <MotionFormModal 
-          onClose={() => { setShowEditModal(null); refresh(); }} 
+          onClose={handleCloseAnyModal} 
           userId={user.id} 
           editTaskId={showEditModal} 
           clients={allClients} 
@@ -1968,11 +2446,12 @@ function MotionPageContent() {
       {showSubmitModal && (
         <SubmitMotionModal 
           taskId={typeof showSubmitModal === 'string' ? showSubmitModal : showSubmitModal.taskId} 
+          motionTask={motionTasks.find(m => m.id === (typeof showSubmitModal === 'string' ? showSubmitModal : showSubmitModal.taskId))}
           targetAfterSubmit={typeof showSubmitModal === 'object' ? showSubmitModal?.targetAfterSubmit : null}
           onRequestRevision={(mId) => {
-            setShowRevisionModal(mId);
+            switchModal('REVISION', { taskId: mId });
           }}
-          onClose={() => { setShowSubmitModal(null); refresh(); }} 
+          onClose={handleCloseAnyModal} 
           userId={user.id} 
         />
       )}
@@ -1981,7 +2460,7 @@ function MotionPageContent() {
       {showRevisionModal && (
         <MotionRevisionModal
           taskId={showRevisionModal}
-          onClose={() => { setShowRevisionModal(null); refresh(); }}
+          onClose={handleCloseAnyModal}
           userId={user.id}
         />
       )}
@@ -1990,7 +2469,7 @@ function MotionPageContent() {
       {showHandoverModal && (
         <HandoverModal 
           taskId={showHandoverModal} 
-          onClose={() => { setShowHandoverModal(null); refresh(); }} 
+          onClose={handleCloseAnyModal} 
           userId={user.id} 
           operators={allUsers.filter(u => u.role_name === 'OPERATOR')} 
         />
@@ -2005,6 +2484,7 @@ function MotionDetailModal({
   user,
   allUsers,
   allClients,
+  allTasks = [],
   initialTab = 'details',
   onClose,
   onRefresh,
@@ -2012,12 +2492,14 @@ function MotionDetailModal({
   onSubmit,
   onRevise,
   onHandover,
-  onEdit
+  onEdit,
+  onApprove
 }: {
   motionTask: EnrichedMotionTask;
   user: UserType;
   allUsers: UserType[];
   allClients: Client[];
+  allTasks?: TaskWithRelations[];
   initialTab?: 'details' | 'chat';
   onClose: () => void;
   onRefresh: () => void;
@@ -2026,243 +2508,458 @@ function MotionDetailModal({
   onRevise: () => void;
   onHandover: () => void;
   onEdit: () => void;
+  onApprove?: () => Promise<void> | void;
 }) {
-  const [activeTab, setActiveTab] = useState<'details' | 'chat'>(initialTab);
+  const [copiedLink, setCopiedLink] = useState(false);
   const [commentCount, setCommentCount] = useState<number>(0);
   const [unreadChatCount, setUnreadChatCount] = useState<number>(0);
+  const initialAtts = (motionTask.attachments && motionTask.attachments.length > 0)
+    ? motionTask.attachments
+    : (motionTask.parentTask?.attachments || []);
+  const [taskAttachments, setTaskAttachments] = useState<TaskAttachment[]>(initialAtts);
 
   useEffect(() => {
-    if (initialTab) {
-      setActiveTab(initialTab);
-    }
-  }, [initialTab]);
+    const atts = (motionTask.attachments && motionTask.attachments.length > 0)
+      ? motionTask.attachments
+      : (motionTask.parentTask?.attachments || []);
+    setTaskAttachments(atts);
+  }, [motionTask.attachments, motionTask.parentTask?.attachments]);
 
-  const canEdit = ['ADMIN', 'TEAM_LEAD'].includes(user.role_name) || !motionTask.parentTask;
+  const handleDirectUpload = async (newAttachment: TaskAttachment): Promise<void> => {
+    await addTaskAttachment(motionTask.id, newAttachment);
+    setTaskAttachments(prev => [...prev, newAttachment]);
+    onRefresh();
+  };
+
+  const handleDirectDelete = async (attachmentId: string): Promise<void> => {
+    await removeTaskAttachment(motionTask.id, attachmentId);
+    setTaskAttachments(prev => prev.filter(a => a.id !== attachmentId));
+    onRefresh();
+  };
+
+  const canEdit = ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) || !motionTask.parentTask;
+  const canDeleteMotion = canUserDeleteMotionTask(user, motionTask);
+  const [isDeleting, setIsDeleting] = useState(false);
   const clientName = motionTask.parentTask?.client_name || allClients.find(c => c.id === motionTask.client_id)?.name || 'Unknown Client';
   const picUser = allUsers.find(u => u.id === motionTask.motion_pic_id);
 
+  // Robust inheritance: resolve Strategic Concept Deck and GD Asset links even across handovers/spawns
+  const parentTask = motionTask.parentTask;
+  const sourceStratTask = parentTask?.source_strategic_task_id
+    ? (allTasks || []).find(t => t.id === parentTask.source_strategic_task_id)
+    : null;
+
+  const effectiveStratLink = parentTask?.strat_concept_link || sourceStratTask?.strat_concept_link || null;
+  const effectiveStratName = parentTask?.strat_concept_name || sourceStratTask?.strat_concept_name || 'Strategic Concept Deck';
+  const effectiveStratSubmittedAt = parentTask?.strat_submitted_at || sourceStratTask?.strat_submitted_at || null;
+
+  const effectiveGdAssetLink = parentTask?.final_asset_link || null;
+  const effectiveGdAssetName = parentTask?.final_asset_name || 'Design Approved Asset';
+
+  const effectiveMotionLink = motionTask.link_motion || null;
+
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="modal-overlay" onClick={onClose} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px', zIndex: 999 }}>
-      <div className="modal-content" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: '840px', background: 'var(--bg-card)', borderRadius: '16px', border: '1px solid var(--border-primary)', boxShadow: 'var(--shadow-dropdown)', display: 'flex', flexDirection: 'column', maxHeight: '92vh', overflow: 'hidden' }}>
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="modal-overlay" onClick={onClose} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '12px' }}>
+      <div className="modal-workspace-dialog" onClick={e => e.stopPropagation()}>
         
-        {/* Header */}
-        <div style={{ padding: '20px 24px 16px 24px', borderBottom: '1px solid var(--border-primary)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', background: 'var(--bg-secondary)' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <div className="flex items-center gap-2.5">
-              <span style={{ fontFamily: 'monospace', fontSize: '13px', color: 'var(--accent-pink)', fontWeight: '700', padding: '2px 8px', background: 'rgba(236,72,153,0.1)', borderRadius: '6px' }}>
-                {motionTask.parentTask?.task_code || (motionTask.id || '').substring(0, 10).toUpperCase()}
-              </span>
-              <span className="text-xs text-[var(--text-muted)] font-medium">|</span>
-              <span className="text-xs text-[var(--text-secondary)] font-medium">{clientName}</span>
+        {/* Header Bar (52px Fixed) */}
+        <div className="modal-workspace-header">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] text-[10px] font-bold tracking-wider text-[var(--text-secondary)]">
+              <Film className="w-3.5 h-3.5 text-pink-500" />
+              <span>MOTION PIPELINE</span>
             </div>
-            <h2 style={{ fontSize: '19px', fontWeight: '700', color: 'var(--text-primary)', margin: 0, lineHeight: 1.3 }}>
-              {motionTask.parentTask?.campaign_name || motionTask.campaign_type || 'Standalone Motion Request'}
-            </h2>
-            
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '4px' }}>
-              <span className={`badge ${MOTION_STATUS_COLORS[motionTask.status_motion]}`}>
-                {MOTION_STATUS_LABELS[motionTask.status_motion]}
-              </span>
-              <span className="badge text-[10px] py-0 px-2 bg-purple-500/20 text-purple-300 border-purple-500/30">
-                {MOTION_DIFFICULTY_LABELS[motionTask.motion_difficulty]}
-              </span>
-              {motionTask.platform && (
-                <span className="badge" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6', borderColor: 'rgba(59, 130, 246, 0.2)' }}>
-                  {motionTask.platform}
-                </span>
-              )}
-              {motionTask.studio && (
-                <span className="badge" style={{ background: 'rgba(236, 72, 153, 0.1)', color: '#ec4899', borderColor: 'rgba(236, 72, 153, 0.2)' }}>
-                  Studio {motionTask.studio}
-                </span>
-              )}
-            </div>
+            <span className="text-xs text-[var(--text-muted)]">•</span>
+            <span className="font-mono text-xs font-bold px-2 py-0.5 rounded-md bg-pink-500/10 text-pink-400 border border-pink-500/20">
+              {motionTask.parentTask?.task_code || (motionTask.id || '').substring(0, 10).toUpperCase()}
+            </span>
+            <span className="text-xs text-[var(--text-muted)]">•</span>
+            <span className={`badge ${MOTION_STATUS_COLORS[motionTask.status_motion]}`} style={{ fontSize: '11px', padding: '1px 6px' }}>
+              • {MOTION_STATUS_LABELS[motionTask.status_motion]}
+            </span>
+            <span className="badge text-[10px] py-0 px-2 bg-purple-500/20 text-purple-300 border-purple-500/30">
+              {MOTION_DIFFICULTY_LABELS[motionTask.motion_difficulty]}
+            </span>
           </div>
-          <button onClick={onClose} className="btn-ghost" style={{ padding: '8px', borderRadius: '8px', background: 'var(--bg-tertiary)', border: 'none', cursor: 'pointer' }}>
-            <X style={{ width: '20px', height: '20px', color: 'var(--text-secondary)' }} />
-          </button>
+
+          <div className="flex items-center gap-1.5 shrink-0">
+            {/* Production Date Badge */}
+            <div className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold bg-pink-500/10 text-pink-400 border border-pink-500/20">
+              <Clock className="w-3 h-3" />
+              <span>Produksi: {motionTask.production_date ? formatDisplayDate(motionTask.production_date) : formatDisplayDate(motionTask.created_at)}</span>
+            </div>
+
+            {/* Copy / Share Link */}
+            <button
+              type="button"
+              onClick={() => {
+                if (typeof window !== 'undefined') {
+                  navigator.clipboard.writeText(`${window.location.origin}/dashboard/motion?id=${motionTask.id}`);
+                  setCopiedLink(true);
+                  setTimeout(() => setCopiedLink(false), 2000);
+                }
+              }}
+              className="p-1 rounded-lg border border-[var(--border-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors flex items-center gap-1.5 text-xs font-medium cursor-pointer"
+              title="Salin Link Tiket Motion"
+            >
+              {copiedLink ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Share2 className="w-3.5 h-3.5" />}
+              {copiedLink && <span className="text-[11px] text-emerald-500 hidden md:inline">Tersalin!</span>}
+            </button>
+
+            {/* Close button */}
+            <button 
+              onClick={onClose} 
+              className="p-1 rounded-lg border border-[var(--border-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
+              title="Tutup Modal"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
-        {/* Modal Navigation Tabs */}
-        <div className="flex items-center gap-2 px-6 py-2 border-b border-[var(--border-primary)] bg-[var(--bg-primary)]">
-          <button
-            type="button"
-            onClick={() => setActiveTab('details')}
-            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-2 ${
-              activeTab === 'details'
-                ? 'bg-pink-600 text-white shadow-sm'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
-            }`}
-          >
-            <FileText className="w-3.5 h-3.5" />
-            Detail Motion
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('chat')}
-            className={`px-4 py-2 rounded-lg text-xs font-semibold transition-all flex items-center gap-2 ${
-              activeTab === 'chat'
-                ? 'bg-pink-600 text-white shadow-sm'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
-            }`}
-          >
-            <MessageSquare className="w-3.5 h-3.5" />
-            Kolom Chat &amp; Diskusi
-            {commentCount > 0 && (
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-                activeTab === 'chat' ? 'bg-white/25 text-white' : 'bg-pink-100 text-pink-700 dark:bg-pink-900/50 dark:text-pink-300'
-              }`}>
-                {commentCount}
-              </span>
-            )}
-            {unreadChatCount > 0 && (
-              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" title={`${unreadChatCount} pesan belum dibaca`} />
-            )}
-          </button>
-        </div>
-
-        {/* Modal Body */}
-        <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', flex: 1, overflowY: 'auto' }} className="custom-scrollbar">
+        {/* Modal Body: Two-Column Side-by-Side (workspace) */}
+        <div className="modal-workspace-body">
           
-          {/* ================= TAB 1: DETAIL REQUEST ================= */}
-          {activeTab === 'details' && (
-            <div className="space-y-6">
-              {/* Info Grid */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '20px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Brand / Client</span>
-                  <p style={{ color: 'var(--text-primary)', fontWeight: '600', fontSize: '14px', margin: 0 }}>
-                    {clientName}
+          {/* LEFT COLUMN: Motion Request Details */}
+          <div className="modal-workspace-left custom-scrollbar space-y-2.5">
+            
+            {/* Title & Platform/Studio Badges */}
+            <div className="space-y-1.5 pb-2 border-b border-[var(--border-secondary)]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="w-2 h-2 rounded-full bg-pink-500 shrink-0" />
+                  <span className="text-xs font-bold text-pink-400 uppercase tracking-wider shrink-0">{clientName}</span>
+                  <span className="text-xs text-[var(--text-muted)]">•</span>
+                  <h2 className="text-base font-bold text-[var(--text-primary)] leading-tight truncate m-0">
+                    {motionTask.parentTask?.campaign_name || motionTask.campaign_type || 'Motion Graphic Task'}
+                  </h2>
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {motionTask.platform && (
+                    <span className="badge" style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#3b82f6', borderColor: 'rgba(59, 130, 246, 0.2)', fontSize: '10px', padding: '1px 5px' }}>
+                      {motionTask.platform}
+                    </span>
+                  )}
+                  {motionTask.studio && (
+                    <span className="badge" style={{ background: 'rgba(236, 72, 153, 0.1)', color: '#ec4899', borderColor: 'rgba(236, 72, 153, 0.2)', fontSize: '10px', padding: '1px 5px' }}>
+                      Studio {motionTask.studio}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Quick Actions Row under title */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                {canEdit && !motionTask.parentTask && (
+                  <button 
+                    onClick={onEdit}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] border border-[var(--border-primary)] text-[var(--text-primary)] transition-colors cursor-pointer"
+                  >
+                    <Edit2 className="w-3 h-3 text-pink-500" /> Edit Request
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (typeof window !== 'undefined') {
+                      navigator.clipboard.writeText(`${window.location.origin}/dashboard/motion?id=${motionTask.id}`);
+                      setCopiedLink(true);
+                      setTimeout(() => setCopiedLink(false), 2000);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] border border-[var(--border-primary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
+                >
+                  <Copy className="w-3 h-3 text-[var(--text-muted)]" /> 
+                  {copiedLink ? 'Tersalin!' : 'Copy Link'}
+                </button>
+                {effectiveStratLink && (
+                  <a
+                    href={sanitizeUrl(effectiveStratLink)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-purple-400 transition-colors"
+                    title={effectiveStratName}
+                  >
+                    <FileText className="w-3 h-3" /> Concept Deck
+                  </a>
+                )}
+                {effectiveGdAssetLink && (
+                  <a
+                    href={sanitizeUrl(effectiveGdAssetLink)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 transition-colors"
+                    title={effectiveGdAssetName}
+                  >
+                    <ExternalLink className="w-3 h-3" /> Asset GD
+                  </a>
+                )}
+                {effectiveMotionLink && (
+                  <a
+                    href={sanitizeUrl(effectiveMotionLink)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-pink-500/10 hover:bg-pink-500/20 border border-pink-500/30 text-pink-400 transition-colors"
+                  >
+                    <Film className="w-3 h-3" /> Output Render
+                  </a>
+                )}
+              </div>
+            </div>
+
+            {/* Key Information Card (Specs Grid) */}
+            <div className="p-2.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-primary)]">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-2 text-xs">
+                
+                {/* Brand & Client */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider">
+                    Brand / Client
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-pink-500 shrink-0" />
+                    <span className="font-semibold text-xs text-[var(--text-primary)] truncate">
+                      {clientName}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Campaign Ref */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider">
+                    Campaign Ref
+                  </span>
+                  <p className="font-semibold text-xs text-[var(--text-primary)] truncate m-0">
+                    {motionTask.parentTask?.campaign_name || motionTask.campaign_type || '—'}
                   </p>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Requester</span>
-                  <p style={{ color: 'var(--text-primary)', fontWeight: '600', fontSize: '14px', margin: 0 }}>
-                    {motionTask.parentTask?.created_by_name || 'Requester'}
-                  </p>
+
+                {/* Assigned Motion PIC */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider">
+                    Motion PIC
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-3.5 h-3.5 rounded-full bg-pink-500/20 text-pink-400 font-bold text-[8px] flex items-center justify-center shrink-0">
+                      {(picUser?.full_name || 'U').substring(0, 2).toUpperCase()}
+                    </span>
+                    <span className="font-semibold text-xs text-[var(--text-primary)] truncate">
+                      {picUser?.full_name || 'Belum di-assign'}
+                    </span>
+                  </div>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Motion Type</span>
-                  <p style={{ color: 'var(--text-primary)', fontSize: '14px', margin: 0, fontWeight: '500' }}>
-                    {motionTask.motion_type || motionTask.parentTask?.content_type_name || 'Motion Video'}
-                  </p>
+
+                {/* Requester / AE */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider">
+                    AE (Requester)
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-3.5 h-3.5 rounded-full bg-purple-500/20 text-purple-400 font-bold text-[8px] flex items-center justify-center shrink-0">
+                      {(motionTask.parentTask?.created_by_name || 'AE').substring(0, 2).toUpperCase()}
+                    </span>
+                    <span className="font-semibold text-xs text-[var(--text-primary)] truncate">
+                      {motionTask.parentTask?.created_by_name || 'Requester'}
+                    </span>
+                  </div>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Platform &amp; Studio</span>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: 0 }}>
-                    {motionTask.platform || 'General'} • Studio {motionTask.studio || 'Jakarta'}
-                  </p>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Motion PIC</span>
-                  <p style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: '600', margin: 0 }}>
-                    {picUser?.full_name || 'Belum di-assign'}
-                  </p>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Design Origin PIC</span>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: 0 }}>
+
+                {/* GD PIC */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider">
+                    GD PIC
+                  </span>
+                  <p className="font-semibold text-xs text-[var(--text-primary)] truncate m-0">
                     {motionTask.parentTask?.design_pic_name || '—'}
                   </p>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Tanggal Produksi</span>
-                  <p style={{ color: 'var(--text-secondary)', fontSize: '14px', margin: 0 }}>
-                    {motionTask.production_date ? formatDisplayDate(motionTask.production_date) : formatDisplayDate(motionTask.created_at)}
-                  </p>
-                </div>
-                {motionTask.period_start && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Periode Tayang</span>
-                    <p style={{ color: 'var(--text-primary)', fontWeight: '600', fontSize: '14px', margin: 0 }}>
-                      {formatDisplayDate(motionTask.period_start)} s/d {formatDisplayDate(motionTask.period_end || '')}
-                    </p>
-                  </div>
-                )}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Total Revisions</span>
-                  <p style={{ color: motionTask.motion_revision_count > 0 ? 'var(--accent-amber)' : 'var(--text-secondary)', fontSize: '14px', fontWeight: '500', margin: 0 }}>
-                    Motion Rev: {motionTask.motion_revision_count}
-                  </p>
-                </div>
-              </div>
 
-              {/* Brief & Notes */}
-              {motionTask.notes && (
-                <div className="p-4 rounded-xl space-y-1.5" style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-primary)' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Brief &amp; Catatan Khusus</span>
-                  <p style={{ fontSize: '13px', color: 'var(--text-primary)', margin: 0, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{motionTask.notes}</p>
-                </div>
-              )}
-
-              {/* Design GD Final Asset Handoff Section */}
-              <div style={{ padding: '16px', background: 'rgba(59,130,246,0.05)', borderRadius: '12px', border: '1px solid rgba(59,130,246,0.2)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <span style={{ fontSize: '11px', color: 'var(--accent-blue)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                  Asset Handoff (Design GD)
-                </span>
-                {motionTask.parentTask?.final_asset_link ? (
-                  <>
-                    <p style={{ fontSize: '14px', color: 'var(--text-primary)', fontWeight: '600', margin: 0 }}>
-                      {motionTask.parentTask?.final_asset_name || 'Design Approved Asset'}
-                    </p>
-                    <a href={sanitizeUrl(motionTask.parentTask.final_asset_link)} target="_blank" rel="noopener noreferrer"
-                      style={{ fontSize: '13px', color: 'var(--accent-blue)', display: 'flex', alignItems: 'center', gap: '6px', textDecoration: 'none', fontWeight: '500' }}>
-                      <ExternalLink style={{ width: '14px', height: '14px' }} /> {motionTask.parentTask.final_asset_link}
-                    </a>
-                  </>
-                ) : (
-                  <p className="text-xs text-[var(--text-muted)] italic">
-                    {motionTask.parentTask ? 'Asset GD belum dilampirkan pada tiket induk.' : 'Tiket standalone (tanpa tiket desain induk).'}
-                  </p>
-                )}
-              </div>
-
-              {/* Motion Render Output Link Section */}
-              {motionTask.link_motion && (
-                <div style={{ padding: '16px', background: 'rgba(236,72,153,0.05)', borderRadius: '12px', border: '1px solid rgba(236,72,153,0.2)', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <span style={{ fontSize: '11px', color: 'var(--accent-pink)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    Output Render Animasi (Motion)
+                {/* Motion Type */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider">
+                    Motion Type
                   </span>
-                  <a href={sanitizeUrl(motionTask.link_motion)} target="_blank" rel="noopener noreferrer"
-                    style={{ fontSize: '13px', color: 'var(--accent-pink)', display: 'flex', alignItems: 'center', gap: '6px', textDecoration: 'none', fontWeight: '600' }}>
-                    <Film style={{ width: '15px', height: '15px' }} /> {motionTask.link_motion}
-                  </a>
+                  <p className="font-semibold text-xs text-[var(--text-primary)] truncate m-0">
+                    {motionTask.motion_type || motionTask.parentTask?.content_type_name || 'Motion Video'}
+                  </p>
                 </div>
-              )}
 
-              {/* Revision History for Motion */}
-              {motionTask.parentTask?.revisions && motionTask.parentTask.revisions.filter(r => r.stage === 'MOTION').length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <h4 style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <RotateCcw style={{ width: '15px', height: '15px', color: 'var(--accent-amber)' }} />
-                    Riwayat Revisi Motion ({motionTask.parentTask.revisions.filter(r => r.stage === 'MOTION').length})
-                  </h4>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                    {motionTask.parentTask.revisions.filter(r => r.stage === 'MOTION').sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).map(rev => (
-                      <div key={rev.id} style={{ padding: '14px', background: 'var(--bg-tertiary)', borderRadius: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <span style={{ fontWeight: '600', color: 'var(--text-primary)', fontSize: '13px' }}>Motion Rev #{rev.revision_number}</span>
-                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>{formatDisplayDate(rev.created_at)}</span>
-                        </div>
-                        <div>
-                          <span className="badge" style={{ fontSize: '10px', padding: '2px 8px', background: 'rgba(217, 119, 6, 0.1)', color: 'var(--accent-amber)', borderColor: 'rgba(217, 119, 6, 0.2)' }}>
-                            {REASON_LABELS[rev.reason_category] || rev.reason_category}
-                          </span>
-                        </div>
-                        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0, lineHeight: '1.5' }}>
-                          {rev.notes || (rev as any).revision_notes}
-                        </p>
-                      </div>
-                    ))}
+                {/* Platform & Studio */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider">
+                    Platform &amp; Studio
+                  </span>
+                  <p className="font-semibold text-xs text-[var(--text-secondary)] m-0">
+                    {motionTask.platform || 'General'} • Studio {motionTask.studio || 'Jakarta'}
+                  </p>
+                </div>
+
+                {/* Tanggal Produksi */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider">
+                    Target Produksi
+                  </span>
+                  <div className="flex items-center gap-1 text-xs font-semibold text-[var(--text-primary)]">
+                    <Calendar className="w-3 h-3 text-amber-500 shrink-0" />
+                    <span>{motionTask.production_date ? formatDisplayDate(motionTask.production_date) : formatDisplayDate(motionTask.created_at)}</span>
                   </div>
                 </div>
+
+                {/* Total Revisions */}
+                <div className="space-y-0.5">
+                  <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider">
+                    Revisions
+                  </span>
+                  <p className="font-semibold text-xs m-0" style={{ color: motionTask.motion_revision_count > 0 ? 'var(--accent-amber)' : 'var(--text-secondary)' }}>
+                    Rev: {motionTask.motion_revision_count}
+                  </p>
+                </div>
+
+              </div>
+            </div>
+
+            {/* Motion Brief & Catatan Khusus with Integrated Photo Attachment */}
+            <div className="p-2.5 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-primary)] space-y-1.5">
+              <RequestImageUpload
+                section="brief"
+                title="Motion Brief & Notes"
+                attachments={taskAttachments}
+                onChange={setTaskAttachments}
+                onDirectUpload={canEdit ? handleDirectUpload : undefined}
+                onDirectDelete={canEdit ? handleDirectDelete : undefined}
+                readOnly={!canEdit}
+                maxFiles={10}
+                headerExtra={
+                  <span className="text-[10px] text-[var(--text-muted)] font-medium">
+                    {motionTask.production_date ? `Target: ${formatDisplayDate(motionTask.production_date)}` : ''}
+                  </span>
+                }
+              >
+                <p className="text-xs text-[var(--text-secondary)] whitespace-pre-wrap leading-relaxed m-0 font-normal max-h-24 overflow-y-auto custom-scrollbar pr-1 mt-1">
+                  {motionTask.notes || 'Tidak ada catatan brief khusus yang disertakan.'}
+                </p>
+              </RequestImageUpload>
+              <div className="flex flex-wrap gap-1 pt-1 border-t border-[var(--border-secondary)]">
+                <span className="text-[9px] px-1.5 py-0.2 rounded bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] text-[var(--text-secondary)]">
+                  Pipeline: MOTION GRAPHIC
+                </span>
+                <span className="text-[9px] px-1.5 py-0.2 rounded bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] text-[var(--text-secondary)]">
+                  Platform: {motionTask.platform || 'General'}
+                </span>
+                <span className="text-[9px] px-1.5 py-0.2 rounded bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] text-[var(--text-secondary)]">
+                  Studio: {motionTask.studio || 'Jakarta'}
+                </span>
+              </div>
+            </div>
+
+            {/* Strategic Concept Deck Result (Persistent across pipelines & handovers) */}
+            {effectiveStratLink && (
+              <div className="p-2.5 rounded-lg bg-purple-500/5 border border-purple-500/20 flex flex-col gap-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-purple-400 font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5" />
+                    Strategic Concept Deck
+                  </span>
+                  {effectiveStratSubmittedAt && (
+                    <span className="text-[10px] text-[var(--text-muted)]">
+                      Submitted: {formatDisplayDate(effectiveStratSubmittedAt)}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-[var(--text-primary)] font-semibold m-0 truncate">
+                  {effectiveStratName}
+                </p>
+                <a
+                  href={sanitizeUrl(effectiveStratLink)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-purple-400 flex items-center gap-1.5 no-underline font-medium hover:underline truncate"
+                >
+                  <ExternalLink className="w-3.5 h-3.5 shrink-0" /> {effectiveStratLink}
+                </a>
+              </div>
+            )}
+
+            {/* Design GD Final Asset Handoff Section */}
+            <div className="p-2.5 rounded-lg bg-blue-500/5 border border-blue-500/20 flex flex-col gap-1">
+              <span className="text-[10px] text-blue-400 font-bold uppercase tracking-wider">
+                Asset Handoff (Design GD Induk)
+              </span>
+              {effectiveGdAssetLink ? (
+                <>
+                  <p className="text-xs text-[var(--text-primary)] font-semibold m-0 truncate">
+                    {effectiveGdAssetName}
+                  </p>
+                  <a href={sanitizeUrl(effectiveGdAssetLink)} target="_blank" rel="noopener noreferrer"
+                    className="text-xs text-blue-400 flex items-center gap-1.5 no-underline font-medium hover:underline truncate">
+                    <ExternalLink className="w-3.5 h-3.5 shrink-0" /> {effectiveGdAssetLink}
+                  </a>
+                </>
+              ) : (
+                <p className="text-xs text-[var(--text-muted)] italic m-0">
+                  {motionTask.parentTask ? 'Asset GD belum dilampirkan pada tiket induk.' : 'Tiket standalone (tanpa tiket desain induk).'}
+                </p>
               )}
             </div>
-          )}
 
-          {/* ================= TAB 2: KOLOM CHAT & DISKUSI TIM ================= */}
-          {activeTab === 'chat' && (
+            {/* Motion Render Output Link Section */}
+            {effectiveMotionLink && (
+              <div className="p-3 rounded-lg bg-pink-500/5 border border-pink-500/20 flex flex-col gap-1.5">
+                <span className="text-[10px] text-pink-400 font-bold uppercase tracking-wider">
+                  Output Render Animasi (Motion)
+                </span>
+                <a href={sanitizeUrl(effectiveMotionLink)} target="_blank" rel="noopener noreferrer"
+                  className="text-xs text-pink-400 flex items-center gap-1.5 no-underline font-semibold hover:underline truncate">
+                  <Film className="w-3.5 h-3.5 shrink-0" /> {effectiveMotionLink}
+                </a>
+              </div>
+            )}
+
+            {/* Riwayat Revisi Motion */}
+            {motionTask.parentTask?.revisions && motionTask.parentTask.revisions.filter(r => r.stage === 'MOTION').length > 0 && (
+              <div className="flex flex-col gap-2">
+                <h4 className="text-xs font-bold text-[var(--text-primary)] m-0 flex items-center gap-1.5">
+                  <RotateCcw className="w-3.5 h-3.5 text-amber-500" />
+                  Riwayat Revisi Motion ({motionTask.parentTask.revisions.filter(r => r.stage === 'MOTION').length})
+                </h4>
+                <div className="flex flex-col gap-1.5">
+                  {motionTask.parentTask.revisions.filter(r => r.stage === 'MOTION').sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).map(rev => (
+                    <div key={rev.id} className="p-2.5 bg-[var(--bg-tertiary)] rounded-lg flex flex-col gap-1 border border-[var(--border-secondary)]">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-[var(--text-primary)] text-xs">Motion Rev #{rev.revision_number}</span>
+                        <span className="text-[10px] text-[var(--text-muted)]">{formatDisplayDate(rev.created_at)}</span>
+                      </div>
+                      <div>
+                        <span className="badge text-[10px] py-0 px-1.5 bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                          {REASON_LABELS[rev.reason_category] || rev.reason_category}
+                        </span>
+                      </div>
+                      <p className="text-xs text-[var(--text-secondary)] m-0 leading-relaxed">
+                        {rev.notes || (rev as any).revision_notes}
+                      </p>
+                      {rev.asset_link && (
+                        <div className="mt-1 p-1.5 bg-[var(--bg-primary)] rounded border border-[var(--border-secondary)] flex items-center gap-1.5 text-xs">
+                          <ExternalLink className="w-3 h-3 text-pink-400 shrink-0" />
+                          <span className="text-[var(--text-muted)] text-[11px]">Render:</span>
+                          <a 
+                            href={sanitizeUrl(rev.asset_link)} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="text-pink-400 underline font-medium truncate"
+                          >
+                            {rev.asset_name || rev.asset_link}
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* RIGHT COLUMN: Dedicated Chat & Activity Stream (~40%) */}
+          <div className="modal-workspace-right">
             <TaskChatSection
               task={
                 motionTask.parentTask || {
@@ -2276,45 +2973,55 @@ function MotionDetailModal({
                 }
               }
               user={user}
-              isActiveTab={activeTab === 'chat'}
+              embedded={true}
               onCommentsUpdated={(count, unread) => {
                 setCommentCount(count);
                 setUnreadChatCount(unread);
               }}
             />
-          )}
+          </div>
 
         </div>
 
-        {/* Action Buttons Footer */}
-        <div style={{ padding: '16px 24px', borderTop: '1px solid var(--border-primary)', display: 'flex', flexWrap: 'wrap', gap: '12px', justifyContent: 'space-between', alignItems: 'center', background: 'var(--bg-secondary)', borderBottomLeftRadius: '16px', borderBottomRightRadius: '16px' }}>
+        {/* Action Buttons Footer (54px Sticky) */}
+        <div className="modal-workspace-footer">
           
           {/* LEFT SIDE: Management Actions */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '10px' }}>
+          <div className="flex flex-wrap items-center gap-1.5">
             {canEdit && !motionTask.parentTask && (
               <button 
                 onClick={onEdit} 
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', borderRadius: '8px', fontWeight: '600', fontSize: '13px', color: 'var(--text-primary)', background: 'var(--bg-tertiary)', border: '1px solid var(--border-secondary)', cursor: 'pointer' }}
+                className="h-8 px-2.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1 text-[var(--text-primary)] bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] border border-[var(--border-secondary)] transition-colors cursor-pointer"
               >
-                <Edit2 style={{ width: '14px', height: '14px' }} /> Edit Request
+                <Edit2 className="w-3 h-3 text-pink-500" /> Edit Request
               </button>
             )}
-            {['ADMIN', 'TEAM_LEAD'].includes(user.role_name) && (
+            {canDeleteMotion && (
               <button 
+                disabled={isDeleting}
                 onClick={async () => { 
-                  if (confirm('Apakah Anda yakin ingin menghapus tiket motion ini? Tindakan ini tidak dapat dibatalkan.')) {
-                    await deleteMotionTask(motionTask.id, user.id);
-                    onRefresh();
-                    onClose();
+                  const label = motionTask.parentTask?.task_code || (motionTask.id || '').substring(0, 10).toUpperCase();
+                  if (window.confirm(`Apakah Anda yakin ingin menghapus tiket motion ${label}? Tindakan ini tidak dapat dibatalkan.`)) {
+                    try {
+                      setIsDeleting(true);
+                      await deleteMotionTask(motionTask.id, user.id);
+                      onRefresh();
+                      onClose();
+                    } catch (err: any) {
+                      console.error('Gagal menghapus tiket motion:', err);
+                      alert(`Gagal menghapus tiket motion: ${err?.message || err}`);
+                    } finally {
+                      setIsDeleting(false);
+                    }
                   }
                 }} 
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', borderRadius: '8px', fontWeight: '600', fontSize: '13px', color: 'var(--accent-red)', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)', cursor: 'pointer' }}
+                className="h-8 px-2.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1 text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 transition-colors cursor-pointer disabled:opacity-50"
               >
-                <Trash2 style={{ width: '14px', height: '14px' }} /> Delete
+                <Trash2 className="w-3 h-3" /> {isDeleting ? 'Deleting...' : 'Delete'}
               </button>
             )}
             {/* ROLLBACK BUTTON */}
-            {['ADMIN', 'TEAM_LEAD'].includes(user.role_name) && motionTask.status_motion !== 'QUEUED' && (
+            {['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) && motionTask.status_motion !== 'QUEUED' && (
               <button 
                 onClick={async () => { 
                   let prevStatus: MotionStatus | null = null;
@@ -2326,50 +3033,62 @@ function MotionDetailModal({
                     case 'COMPLETED': prevStatus = 'APPROVED'; break;
                   }
                   if (prevStatus) {
-                    await updateMotionStatus(motionTask.id, prevStatus);
-                    onRefresh();
+                    try {
+                      await updateMotionStatus(motionTask.id, prevStatus, user.id);
+                      onRefresh();
+                    } catch (err: any) {
+                      console.error('Error rolling back motion status:', err);
+                      alert(`Gagal mengembalikan status motion: ${err?.message || String(err)}`);
+                    }
                   }
                 }} 
-                className="btn-secondary" 
-                style={{ color: 'var(--text-secondary)', borderColor: 'var(--border-primary)', opacity: 0.9, display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', fontSize: '13px', borderRadius: '8px', fontWeight: '600', background: 'var(--bg-primary)' }}
+                className="h-8 px-2.5 rounded-lg text-xs font-semibold inline-flex items-center gap-1 text-[var(--text-secondary)] hover:text-[var(--text-primary)] bg-[var(--bg-primary)] hover:bg-[var(--bg-tertiary)] border border-[var(--border-primary)] transition-colors cursor-pointer"
               >
-                <Undo2 style={{ width: '14px', height: '14px' }} /> Undo Status
+                <Undo2 className="w-3 h-3" /> Undo Status
               </button>
             )}
           </div>
 
           {/* RIGHT SIDE: Primary Flow Actions */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', justifyContent: 'flex-end', alignItems: 'center' }}>
+          <div className="flex flex-wrap items-center gap-1.5 justify-end">
             {/* Assign PIC */}
-            {motionTask.status_motion === 'QUEUED' && ['ADMIN', 'TEAM_LEAD'].includes(user.role_name) && (
+            {motionTask.status_motion === 'QUEUED' && ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) && (
               <button 
                 onClick={onAssign} 
-                className="btn-primary" 
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '8px', fontWeight: '600', fontSize: '13px' }}
+                className="h-8 px-3 rounded-lg text-xs font-semibold btn-primary inline-flex items-center gap-1"
               >
-                <User style={{ width: '14px', height: '14px' }} /> {motionTask.motion_pic_id ? 'Edit PIC' : 'Assign Motion PIC'}
+                <User className="w-3.5 h-3.5" /> {motionTask.motion_pic_id ? 'Edit PIC' : 'Assign Motion PIC'}
               </button>
             )}
 
             {/* Start Work */}
-            {motionTask.status_motion === 'QUEUED' && motionTask.motion_pic_id && (motionTask.motion_pic_id === user.id || ['ADMIN', 'TEAM_LEAD'].includes(user.role_name)) && (
+            {motionTask.status_motion === 'QUEUED' && motionTask.motion_pic_id && (motionTask.motion_pic_id === user.id || ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) && (
               <button 
-                onClick={async () => { await updateMotionStatus(motionTask.id, 'IN_PROGRESS'); onRefresh(); }} 
-                className="btn-primary" 
-                style={{ background: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '8px', fontWeight: '600', fontSize: '13px' }}
+                onClick={async () => { 
+                  try {
+                    await updateMotionStatus(motionTask.id, 'IN_PROGRESS', user.id);
+                    onRefresh();
+                    onClose();
+                  } catch (err: any) {
+                    console.error('Error starting motion work:', err);
+                    alert(`Gagal memulai pengerjaan: ${err?.message || String(err)}`);
+                  }
+                }} 
+                className="h-8 px-3 rounded-lg text-xs font-semibold btn-primary inline-flex items-center gap-1" 
+                style={{ background: 'var(--accent-cyan)' }}
               >
-                <Play style={{ width: '14px', height: '14px' }} /> Start Work
+                <Play className="w-3.5 h-3.5" /> Start Work
               </button>
             )}
 
             {/* Submit Render */}
-            {(motionTask.status_motion === 'IN_PROGRESS' || motionTask.status_motion === 'REVISION') && (motionTask.motion_pic_id === user.id || ['ADMIN', 'TEAM_LEAD'].includes(user.role_name)) && (
+            {(motionTask.status_motion === 'IN_PROGRESS' || motionTask.status_motion === 'REVISION') && (motionTask.motion_pic_id === user.id || ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) && (
               <button 
                 onClick={onSubmit} 
-                className="btn-primary" 
-                style={{ background: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '8px', fontWeight: '600', fontSize: '13px' }}
+                className="h-8 px-3 rounded-lg text-xs font-semibold btn-primary inline-flex items-center gap-1" 
+                style={{ background: 'var(--accent-emerald)' }}
               >
-                <Send style={{ width: '14px', height: '14px' }} /> Submit Render
+                <Send className="w-3.5 h-3.5" /> Submit Render
               </button>
             )}
 
@@ -2378,30 +3097,42 @@ function MotionDetailModal({
               <>
                 <button 
                   onClick={onRevise} 
-                  className="btn-secondary" 
-                  style={{ color: 'var(--accent-amber)', borderColor: 'var(--accent-amber)', display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', borderRadius: '8px', fontWeight: '600', fontSize: '13px', background: 'rgba(245, 158, 11, 0.05)' }}
+                  className="h-8 px-3 rounded-lg text-xs font-semibold btn-secondary text-amber-500 border-amber-500/30 hover:bg-amber-500/10 inline-flex items-center gap-1"
                 >
-                  <RotateCcw style={{ width: '14px', height: '14px' }} /> Request Revision
+                  <RotateCcw className="w-3.5 h-3.5" /> Request Revision
                 </button>
                 
                 <button 
-                  onClick={async () => { await updateMotionStatus(motionTask.id, 'APPROVED'); onRefresh(); }} 
-                  className="btn-primary" 
-                  style={{ background: 'var(--accent-emerald)', display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '8px', fontWeight: '600', fontSize: '13px' }}
+                  onClick={async () => { 
+                    try {
+                      if (onApprove) {
+                        await onApprove();
+                      } else {
+                        await updateMotionStatus(motionTask.id, 'APPROVED', user.id);
+                        onRefresh();
+                        onClose();
+                      }
+                    } catch (err: any) {
+                      console.error('Error approving motion task:', err);
+                      alert(`Gagal menyetujui motion task: ${err?.message || String(err)}`);
+                    }
+                  }} 
+                  className="h-8 px-3 rounded-lg text-xs font-semibold btn-primary inline-flex items-center gap-1" 
+                  style={{ background: 'var(--accent-emerald)' }}
                 >
-                  <CheckCircle2 style={{ width: '14px', height: '14px' }} /> Approve Motion
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Approve Motion
                 </button>
               </>
             )}
 
             {/* Handover to Operator */}
-            {motionTask.status_motion === 'APPROVED' && ['ADMIN', 'TEAM_LEAD'].includes(user.role_name) && (
+            {motionTask.status_motion === 'APPROVED' && ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) && (
               <button 
                 onClick={onHandover} 
-                className="btn-primary" 
-                style={{ background: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 16px', borderRadius: '8px', fontWeight: '600', fontSize: '13px' }}
+                className="h-8 px-3 rounded-lg text-xs font-semibold btn-primary inline-flex items-center gap-1" 
+                style={{ background: 'var(--accent-cyan)' }}
               >
-                <CheckCircle2 style={{ width: '14px', height: '14px' }} /> Handover to Operator
+                <CheckCircle2 className="w-3.5 h-3.5" /> Handover to Operator
               </button>
             )}
           </div>
@@ -2890,19 +3621,41 @@ function MotionChatSection({
 
 // ===================== MODAL: ASSIGN MOTION PIC MODAL =====================
 function AssignMotionPicModal({ 
-  motionTaskId, currentTask, motionUsers, userId, onClose 
+  motionTaskId, 
+  currentTask, 
+  motionUsers, 
+  userId, 
+  userRole,
+  targetStatus,
+  onClose 
 }: { 
-  motionTaskId: string; currentTask?: MotionTask; motionUsers: UserType[]; userId: string; onClose: () => void; 
+  motionTaskId: string; 
+  currentTask?: MotionTask; 
+  motionUsers: UserType[]; 
+  userId: string; 
+  userRole?: string;
+  targetStatus?: MotionStatus | null;
+  onClose: () => void; 
 }) {
-  const [picId, setPicId] = useState(currentTask?.motion_pic_id || motionUsers[0]?.id || '');
+  const initialPicId = currentTask?.motion_pic_id 
+    || (userRole === 'MOTION_PIC' && motionUsers.some(u => u.id === userId) ? userId : motionUsers[0]?.id || '');
+
+  const [picId, setPicId] = useState(initialPicId);
   const [difficulty, setDifficulty] = useState<MotionDifficulty>(currentTask?.motion_difficulty || 'LVL_1_SIMPLE');
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!picId) {
+      alert('Silakan pilih Motion PIC terlebih dahulu.');
+      return;
+    }
     setSubmitting(true);
     try {
       await assignMotionPic(motionTaskId, picId, userId, difficulty);
+      if (targetStatus) {
+        await updateMotionStatus(motionTaskId, targetStatus, userId);
+      }
       onClose();
     } catch (err: any) {
       alert(err.message || 'Error assigning Motion PIC');
@@ -2911,11 +3664,25 @@ function AssignMotionPicModal({
     }
   };
 
+  const isStartingInProgress = targetStatus === 'IN_PROGRESS';
+  const modalTitle = isStartingInProgress
+    ? 'Assign Motion PIC & Mulai Pengerjaan'
+    : currentTask?.motion_pic_id 
+      ? 'Edit / Reassign Motion PIC' 
+      : 'Assign Motion PIC';
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content max-w-md w-full" onClick={e => e.stopPropagation()}>
         <div className="p-6 flex items-center justify-between" style={{ borderBottom: '1px solid var(--border-primary)', background: 'var(--bg-card)' }}>
-          <h2 className="text-lg font-bold text-[var(--text-primary)]">{currentTask?.motion_pic_id ? 'Edit / Reassign Motion PIC' : 'Assign Motion PIC'}</h2>
+          <div>
+            <h2 className="text-lg font-bold text-[var(--text-primary)]">{modalTitle}</h2>
+            {isStartingInProgress && (
+              <p className="text-xs text-[var(--text-muted)] mt-0.5">
+                Tentukan Motion PIC dan tingkat kesulitan untuk memindahkan request ke In Progress.
+              </p>
+            )}
+          </div>
           <button onClick={onClose} className="btn-ghost p-1.5 rounded-full hover:bg-[var(--bg-tertiary)]"><X className="w-5 h-5" /></button>
         </div>
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
@@ -2938,9 +3705,9 @@ function AssignMotionPicModal({
             <p className="text-xs text-[var(--text-muted)] mt-1">Level menentukan bobot beban kerja (workload points) tim motion designer.</p>
           </div>
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
+            <button type="button" onClick={onClose} className="btn-secondary" disabled={submitting}>Cancel</button>
             <button type="submit" className="btn-primary" disabled={submitting}>
-              {submitting ? 'Saving...' : 'Confirm Assignment'}
+              {submitting ? 'Menyimpan...' : isStartingInProgress ? 'Tugaskan & Mulai In Progress' : 'Confirm Assignment'}
             </button>
           </div>
         </form>
@@ -2952,38 +3719,39 @@ function AssignMotionPicModal({
 // ===================== MODAL: SUBMIT MOTION RENDER =====================
 function SubmitMotionModal({ 
   taskId, 
+  motionTask,
   onClose, 
-  userId,
-  targetAfterSubmit,
-  onRequestRevision
+  userId
 }: { 
   taskId: string; 
+  motionTask?: EnrichedMotionTask;
   onClose: () => void; 
   userId: string;
   targetAfterSubmit?: MotionStatus | null;
   onRequestRevision?: (taskId: string) => void;
 }) {
-  const [linkMotion, setLinkMotion] = useState('');
+  const [linkMotion, setLinkMotion] = useState(motionTask?.link_motion || '');
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  const isRevision = motionTask?.status_motion === 'REVISION';
+
+  useEffect(() => {
+    if (motionTask?.link_motion) {
+      setLinkMotion(motionTask.link_motion);
+    }
+  }, [motionTask?.link_motion]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!linkMotion.trim()) return;
+    if (!linkMotion.trim()) {
+      alert('Silakan masukkan link output/render motion terlebih dahulu.');
+      return;
+    }
     setSubmitting(true);
     try {
       await submitMotionTask(taskId, linkMotion.trim(), notes, userId);
-      if (targetAfterSubmit === 'APPROVED') {
-        await updateMotionStatus(taskId, 'APPROVED', userId);
-        onClose();
-      } else if (targetAfterSubmit === 'REVISION') {
-        onClose();
-        if (onRequestRevision) {
-          onRequestRevision(taskId);
-        }
-      } else {
-        onClose();
-      }
+      onClose();
     } catch (err: any) {
       alert(`Gagal submit: ${err?.message || err}`);
     } finally {
@@ -2991,17 +3759,13 @@ function SubmitMotionModal({
     }
   };
 
-  const titleText = targetAfterSubmit === 'APPROVED'
-    ? 'Submit Render & Approve Motion'
-    : targetAfterSubmit === 'REVISION'
-    ? 'Submit Render & Ajukan Revisi'
-    : 'Submit Motion Render';
+  const titleText = isRevision ? 'Re-submit Render Motion (Revisi)' : 'Submit Render Motion';
+  const buttonText = isRevision ? 'Re-submit Output' : 'Submit Output';
 
-  const buttonText = targetAfterSubmit === 'APPROVED'
-    ? 'Submit & Approve'
-    : targetAfterSubmit === 'REVISION'
-    ? 'Submit & Lanjut Revisi'
-    : 'Submit Output';
+  const refStratLink = motionTask?.parentTask?.strat_concept_link;
+  const refStratName = motionTask?.parentTask?.strat_concept_name || 'Strategic Concept Deck';
+  const refGdLink = motionTask?.parentTask?.final_asset_link;
+  const refGdName = motionTask?.parentTask?.final_asset_name || 'Final Design Asset';
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -3010,6 +3774,46 @@ function SubmitMotionModal({
           <h2 className="text-lg font-bold text-[var(--text-primary)]">{titleText}</h2>
           <button onClick={onClose} className="btn-ghost p-1.5 rounded-full"><X className="w-5 h-5" /></button>
         </div>
+
+        {/* Reference Links if available */}
+        {(refStratLink || refGdLink) && (
+          <div className="p-3 mx-6 mt-4 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border-secondary)] space-y-2 text-xs">
+            <span className="text-[10px] uppercase font-bold text-[var(--text-muted)] tracking-wider block">
+              Referensi Desain & Konsep:
+            </span>
+            {refStratLink && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[var(--text-secondary)] truncate">
+                  Konsep: {refStratName}
+                </span>
+                <a
+                  href={sanitizeUrl(refStratLink)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-purple-400 hover:underline shrink-0 flex items-center gap-1 font-semibold"
+                >
+                  Buka Deck <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            )}
+            {refGdLink && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[var(--text-secondary)] truncate">
+                  Asset GD: {refGdName}
+                </span>
+                <a
+                  href={sanitizeUrl(refGdLink)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-400 hover:underline shrink-0 flex items-center gap-1 font-semibold"
+                >
+                  Buka Asset <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            )}
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           <div className="space-y-1.5">
             <label className="label">Link Output / Final Asset Animasi <span className="text-red-500">*</span></label>
@@ -3168,17 +3972,23 @@ function MotionFormModal({
 }) {
   const taskToEdit = editTaskId ? motionTasks?.find(t => t.id === editTaskId) : null;
 
+  const normalizedCampaign = taskToEdit?.campaign_type 
+    ? normalizeCampaignName(taskToEdit.campaign_type) 
+    : 'BAU';
+
   const [formData, setFormData] = useState({
     client_id: taskToEdit?.client_id || clients[0]?.id || 0,
     platform: (taskToEdit?.platform as any) || 'TIKTOK',
     motion_type: taskToEdit?.motion_type || '',
-    campaign_type: taskToEdit?.campaign_type || 'BaU',
+    campaign_type: normalizedCampaign,
     motion_difficulty: (taskToEdit?.motion_difficulty as MotionDifficulty) || 'LVL_1_SIMPLE',
     motion_pic_id: taskToEdit?.motion_pic_id || '',
     production_date: taskToEdit?.production_date || new Date().toISOString().substring(0, 10),
     period_start: taskToEdit?.period_start || new Date().toISOString().substring(0, 10),
     period_end: taskToEdit?.period_end || new Date(Date.now() + 7 * 86400000).toISOString().substring(0, 10),
     studio: (taskToEdit?.studio as any) || 'Jakarta',
+    notes: taskToEdit?.notes || '',
+    attachments: taskToEdit?.attachments || [],
   });
   const [submitting, setSubmitting] = useState(false);
 
@@ -3244,10 +4054,14 @@ function MotionFormModal({
             <div className="space-y-1.5">
               <label className="label">Jenis Kampanye <span className="text-red-500">*</span></label>
               <select required className="select w-full" value={formData.campaign_type} onChange={e => setFormData({...formData, campaign_type: e.target.value})}>
-                <option value="BaU" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">BaU</option>
-                <option value="PayDay" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">PayDay</option>
-                <option value="DD" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">Double Date (DD)</option>
-                <option value="Special" className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">Special</option>
+                {taskToEdit?.campaign_type && !isValidCampaignName(taskToEdit.campaign_type) && (
+                  <option value={taskToEdit.campaign_type} className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">
+                    {taskToEdit.campaign_type} (Legacy)
+                  </option>
+                )}
+                {CAMPAIGN_NAMES.map(c => (
+                  <option key={c} value={c} className="bg-[var(--bg-secondary)] text-[var(--text-primary)]">{c}</option>
+                ))}
               </select>
             </div>
 
@@ -3292,6 +4106,25 @@ function MotionFormModal({
                 <input required type="date" className="input w-full" value={formData.period_end} onChange={e => setFormData({...formData, period_end: e.target.value})} />
               </div>
             </div>
+          </div>
+
+          {/* MOTION BRIEF & NOTES (WITH INTEGRATED PHOTO ATTACHMENT ICON) */}
+          <div className="p-3 rounded-lg space-y-2 bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] mb-5">
+            <RequestImageUpload
+              section="brief"
+              title="Motion Brief & Notes"
+              attachments={formData.attachments || []}
+              onChange={atts => setFormData(prev => ({ ...prev, attachments: atts }))}
+              maxFiles={10}
+            >
+              <textarea
+                className="input w-full py-2 text-xs mt-1.5"
+                rows={3}
+                placeholder="Catatan brief motion, instruksi animasi, audio guidelines, atau link referensi..."
+                value={formData.notes}
+                onChange={e => setFormData({ ...formData, notes: e.target.value })}
+              />
+            </RequestImageUpload>
           </div>
           
           <div className="flex justify-end gap-3 pt-4" style={{ borderTop: '1px solid var(--border-primary)' }}>

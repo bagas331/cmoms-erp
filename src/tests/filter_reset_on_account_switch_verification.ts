@@ -43,10 +43,10 @@ async function runVerification() {
     sessionStorageMock.getItem('cmos_tasks_filter_status') === JSON.stringify('IN_PROGRESS') &&
     sessionStorageMock.getItem('cmos_motion_filter_client') === JSON.stringify('Brand X')
   ) {
-    console.log('✓ [PASS] Step 1: User A filter states successfully stored in sessionStorage');
+    console.log('[PASS] Step 1: User A filter states successfully stored in sessionStorage');
     passCount++;
   } else {
-    console.error('✗ [FAIL] Step 1: User A filters not set');
+    console.error('[FAIL] Step 1: User A filters not set');
   }
 
   // 2. Clear filters as triggered by account switch / logout / login
@@ -65,17 +65,17 @@ async function runVerification() {
     motionClientAfter === null &&
     motionMonthsAfter === null
   ) {
-    console.log('✓ [PASS] Step 2: All CMOS filter states cleared cleanly on account switch');
+    console.log('[PASS] Step 2: All CMOS filter states cleared cleanly on account switch');
     passCount++;
   } else {
-    console.error('✗ [FAIL] Step 2: CMOS filters still remained in sessionStorage', { statusAfter, designerAfter });
+    console.error('[FAIL] Step 2: CMOS filters still remained in sessionStorage', { statusAfter, designerAfter });
   }
 
   if (eventDispatched) {
-    console.log('✓ [PASS] Step 3: RESET_FILTERS_EVENT dispatched to reset any mounted hook instances to default values');
+    console.log('[PASS] Step 3: RESET_FILTERS_EVENT dispatched to reset any mounted hook instances to default values');
     passCount++;
   } else {
-    console.error('✗ [FAIL] Step 3: RESET_FILTERS_EVENT was not dispatched');
+    console.error('[FAIL] Step 3: RESET_FILTERS_EVENT was not dispatched');
   }
 
   console.log(`\n======================================================`);

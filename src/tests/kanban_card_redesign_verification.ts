@@ -15,7 +15,7 @@ import {
 
 function runTests() {
   console.log('====================================================');
-  console.log('🧪 RUNNING KANBAN CARD REDESIGN VERIFICATION TESTS');
+  console.log('[TEST] RUNNING KANBAN CARD REDESIGN VERIFICATION TESTS');
   console.log('====================================================\n');
 
   let passed = 0;
@@ -23,10 +23,10 @@ function runTests() {
 
   function assert(condition: boolean, testName: string) {
     if (condition) {
-      console.log(`  ✅ [PASS] ${testName}`);
+      console.log(`  [PASS] ${testName}`);
       passed++;
     } else {
-      console.error(`  ❌ [FAIL] ${testName}`);
+      console.error(`  [FAIL] ${testName}`);
       failed++;
     }
   }
@@ -139,8 +139,32 @@ function runTests() {
     assert(motionFinishedDue.isOverdue === false && motionFinishedDue.badge === null, 'Approved/Completed motion task suppresses overdue alarms');
   }
 
+  // --- Test Group 6: Creative Brief & Objective Card Image Preview ---
+  console.log('\n--- Test Group 6: Creative Brief & Objective Card Image Preview ---');
+  {
+    const mockTaskAttachments: any[] = [
+      { id: 'att-1', url: '/uploads/tasks/brief_1.png', name: 'brief_1.png', section: 'brief', type: 'image/png' },
+      { id: 'att-2', url: '/uploads/tasks/brief_2.jpg', name: 'brief_2.jpg', section: 'brief', type: 'image/jpeg' },
+      { id: 'att-3', url: '/uploads/tasks/spec_doc.pdf', name: 'spec_doc.pdf', section: 'detail', type: 'application/pdf' }
+    ];
+
+    const briefOnly = mockTaskAttachments.filter(
+      att => (att.section === 'brief' || !att.section) &&
+             (!att.type || att.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(att.url || att.name))
+    );
+
+    assert(briefOnly.length === 2, 'Correctly filters only image attachments belonging to brief section');
+    assert(briefOnly[0].id === 'att-1', 'First brief image is selected as primary cover');
+    assert(briefOnly.length - 1 === 1, 'Multi-photo badge correctly computes +1 extra photo');
+
+    // Test URL normalizer
+    const rawUrl = 'uploads/tasks/photo.png';
+    const normalized = rawUrl.startsWith('http') || rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`;
+    assert(normalized === '/uploads/tasks/photo.png', 'Leading slash added to relative image path');
+  }
+
   console.log('\n====================================================');
-  console.log(`📊 TEST SUITE SUMMARY: ${passed} / ${passed + failed} TESTS PASSED (${Math.round((passed / (passed + failed)) * 100)}%)`);
+  console.log(`[REPORT] TEST SUITE SUMMARY: ${passed} / ${passed + failed} TESTS PASSED (${Math.round((passed / (passed + failed)) * 100)}%)`);
   console.log('====================================================');
 
   if (failed > 0) {

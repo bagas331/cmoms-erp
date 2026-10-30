@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { getUsers, createUser, deleteUser, updateUserRole } from '@/lib/supabase-store';
 import { ROLE_COLORS, ROLE_LABELS, ROLE_DESCRIPTIONS } from '@/lib/constants';
 import { User, RoleName } from '@/lib/types';
@@ -44,8 +44,10 @@ export default function UsersPage() {
   // Feedback Notification
   const [feedbackMessage, setFeedbackMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
-  // Create User Modal
-  const [showCreateModal, setShowCreateModal] = useState(false);
+  // Modals with Guaranteed Mutual Exclusion
+  const [showCreateModal, _setShowCreateModal] = useState(false);
+  const [showRoleModal, _setShowRoleModal] = useState(false);
+
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [createFormData, setCreateFormData] = useState({
@@ -56,12 +58,58 @@ export default function UsersPage() {
   const [isCreating, setIsCreating] = useState(false);
 
   // Edit / Change Role Modal
-  const [showRoleModal, setShowRoleModal] = useState(false);
   const [selectedUserForRole, setSelectedUserForRole] = useState<User | null>(null);
   const [selectedNewRole, setSelectedNewRole] = useState<RoleName>('DESIGNER');
   const [selectedCapacityPoints, setSelectedCapacityPoints] = useState<number>(7.0);
   const [isSavingRole, setIsSavingRole] = useState(false);
   const [roleModalError, setRoleModalError] = useState<string | null>(null);
+
+  const setShowCreateModal = useCallback((show: boolean | ((prev: boolean) => boolean)) => {
+    _setShowCreateModal(prev => {
+      const next = typeof show === 'function' ? show(prev) : show;
+      if (next) {
+        _setShowRoleModal(false);
+        setSelectedUserForRole(null);
+      }
+      return next;
+    });
+  }, []);
+
+  const setShowRoleModal = useCallback((show: boolean | ((prev: boolean) => boolean)) => {
+    _setShowRoleModal(prev => {
+      const next = typeof show === 'function' ? show(prev) : show;
+      if (next) {
+        _setShowCreateModal(false);
+        setInviteLink(null);
+      }
+      return next;
+    });
+  }, []);
+
+  // Body scroll lock effect when any modal is open
+  useEffect(() => {
+    if (showCreateModal || showRoleModal) {
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = originalOverflow;
+      };
+    }
+  }, [showCreateModal, showRoleModal]);
+
+  // Keyboard shortcut to close modals with ESC
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowCreateModal(false);
+        setShowRoleModal(false);
+        setSelectedUserForRole(null);
+        setInviteLink(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [setShowCreateModal, setShowRoleModal]);
 
   const refresh = async () => {
     setLoading(true);
@@ -319,18 +367,26 @@ export default function UsersPage() {
       {/* Toolbar: Search & Filter */}
       <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3" style={{ background: 'var(--bg-secondary)', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--border-primary)' }}>
         <div className="relative flex-1">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
+          {!searchTerm && (
+            <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none transition-opacity duration-150" />
+          )}
           <input
             type="text"
-            className="input pl-10 w-full bg-[var(--bg-primary)] text-sm"
+            className="input w-full bg-[var(--bg-primary)] text-sm transition-all"
             placeholder="Cari user berdasarkan nama atau email..."
             value={searchTerm}
             onChange={e => setSearchTerm(e.target.value)}
+            style={{
+              paddingLeft: searchTerm ? '14px' : '38px',
+              paddingRight: searchTerm ? '32px' : '14px',
+            }}
           />
           {searchTerm && (
             <button
+              type="button"
               onClick={() => setSearchTerm('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
+              title="Clear search"
             >
               <X className="w-4 h-4" />
             </button>

@@ -72,17 +72,35 @@ export default function CapacityPage() {
   // Filter applied state (for Apply / Reset)
   const [appliedFilter, setAppliedFilter] = usePersistedState<GlobalAnalyticsFilter>('cmos_capacity_applied_filter', defaultCapacityFilter);
 
-  // Modals
-  const [drillDownData, setDrillDownData] = useState<{
+  // Modals with Guaranteed Mutual Exclusion
+  const [drillDownData, _setDrillDownData] = useState<{
     title: string;
     subtitle?: string;
     tasks: TaskWithRelations[];
   } | null>(null);
 
-  const [showCapacityModal, setShowCapacityModal] = useState(false);
+  const [showCapacityModal, _setShowCapacityModal] = useState(false);
   const [selectedUserForCap, setSelectedUserForCap] = useState<User | null>(null);
   const [inputDailyCap, setInputDailyCap] = useState<number>(7);
   const [isSavingCap, setIsSavingCap] = useState(false);
+
+  const setDrillDownData = useCallback((data: { title: string; subtitle?: string; tasks: TaskWithRelations[] } | null | ((prev: any) => any)) => {
+    if (data) {
+      _setShowCapacityModal(false);
+      setSelectedUserForCap(null);
+    }
+    _setDrillDownData(data);
+  }, []);
+
+  const setShowCapacityModal = useCallback((show: boolean | ((prev: boolean) => boolean)) => {
+    _setShowCapacityModal(prev => {
+      const next = typeof show === 'function' ? show(prev) : show;
+      if (next) {
+        _setDrillDownData(null);
+      }
+      return next;
+    });
+  }, []);
 
   // Load raw data
   const loadData = useCallback(async () => {
@@ -111,12 +129,24 @@ export default function CapacityPage() {
     loadData();
   }, [loadData]);
 
+  // Body scroll lock effect when any modal is open
+  useEffect(() => {
+    if (drillDownData || showCapacityModal) {
+      const originalOverflow = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = originalOverflow;
+      };
+    }
+  }, [drillDownData, showCapacityModal]);
+
   // Keyboard shortcut to close modals with ESC
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setDrillDownData(null);
         setShowCapacityModal(false);
+        setSelectedUserForCap(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -291,20 +321,20 @@ export default function CapacityPage() {
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
           <button 
             onClick={handleExportTab} 
-            className="btn-outline shrink-0 h-10 px-4 rounded-xl flex items-center gap-2 text-sm font-semibold"
+            className="btn-outline shrink-0 h-8 px-3 rounded-lg flex items-center gap-1.5 text-xs font-semibold"
           >
-            <Download className="w-4 h-4" /> Export CSV
+            <Download className="w-3.5 h-3.5" /> Export CSV
           </button>
           {isLeaderOrAdmin && (
             <button
               onClick={() => setShowCapacityModal(true)}
-              className="btn-secondary shrink-0 h-10 px-4 rounded-xl flex items-center gap-2 text-sm font-semibold"
+              className="btn-secondary shrink-0 h-8 px-3 rounded-lg flex items-center gap-1.5 text-xs font-semibold"
               style={{ background: 'var(--bg-card)', border: '1px solid var(--border-primary)' }}
             >
-              <Settings className="w-4 h-4 text-[var(--accent-purple)]" />
+              <Settings className="w-3.5 h-3.5 text-[var(--accent-purple)]" />
               Configure Capacity
             </button>
           )}
@@ -312,34 +342,34 @@ export default function CapacityPage() {
       </div>
 
       {/* GLOBAL INTERCONNECTED FILTER BAR */}
-      <div className="card-static p-4 rounded-2xl border border-[var(--border-primary)] space-y-3" style={{ background: 'var(--bg-secondary)' }}>
-        <div className="flex items-center justify-between pb-2 border-b border-[var(--border-secondary)]">
-          <div className="flex items-center gap-2">
-            <Filter className="w-4 h-4 text-[var(--accent-blue)]" />
-            <span className="text-xs font-bold uppercase tracking-wider text-[var(--text-primary)]">Global Multi-Dimensional Filter</span>
+      <div className="card-static p-3.5 rounded-xl border border-[var(--border-primary)] space-y-2.5" style={{ background: 'var(--bg-secondary)' }}>
+        <div className="flex items-center justify-between pb-1.5 border-b border-[var(--border-secondary)]">
+          <div className="flex items-center gap-1.5">
+            <Filter className="w-3.5 h-3.5 text-[var(--accent-blue)]" />
+            <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--text-primary)]">Global Multi-Dimensional Filter</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             <button
               onClick={handleResetFilter}
-              className="btn-ghost text-xs py-1 px-2.5 flex items-center gap-1 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+              className="btn-ghost text-xs py-1 px-2 flex items-center gap-1 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
             >
-              <RefreshCcw className="w-3.5 h-3.5" /> Reset
+              <RefreshCcw className="w-3 h-3" /> Reset
             </button>
             <button
               onClick={handleApplyFilter}
-              className="btn-primary text-xs py-1.5 px-3.5 rounded-lg flex items-center gap-1.5 font-semibold"
+              className="btn-primary text-xs h-7 py-0 px-3 rounded-md flex items-center gap-1 font-semibold"
             >
-              <Check className="w-3.5 h-3.5" /> Apply Filter
+              <Check className="w-3 h-3" /> Apply Filter
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-9 gap-2.5 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-9 gap-2 text-xs">
           {/* Month */}
           <div>
-            <label className="text-[11px] text-[var(--text-muted)] font-medium mb-1 block">Month</label>
+            <label className="text-[10px] text-[var(--text-muted)] font-bold uppercase mb-0.5 block">Month</label>
             <select
-              className="select w-full text-xs py-1.5 px-2 rounded-lg"
+              className="select w-full h-8 text-xs py-1 px-2 rounded-lg"
               value={filter.month}
               onChange={e => setFilter({ ...filter, month: e.target.value })}
             >
@@ -352,9 +382,9 @@ export default function CapacityPage() {
 
           {/* Year */}
           <div>
-            <label className="text-[11px] text-[var(--text-muted)] font-medium mb-1 block">Year</label>
+            <label className="text-[10px] text-[var(--text-muted)] font-bold uppercase mb-0.5 block">Year</label>
             <select
-              className="select w-full text-xs py-1.5 px-2 rounded-lg"
+              className="select w-full h-8 text-xs py-1 px-2 rounded-lg"
               value={filter.year}
               onChange={e => setFilter({ ...filter, year: e.target.value })}
             >
@@ -365,9 +395,9 @@ export default function CapacityPage() {
 
           {/* Brand */}
           <div>
-            <label className="text-[11px] text-[var(--text-muted)] font-medium mb-1 block">Brand / Client</label>
+            <label className="text-[10px] text-[var(--text-muted)] font-bold uppercase mb-0.5 block">Brand / Client</label>
             <select
-              className="select w-full text-xs py-1.5 px-2 rounded-lg"
+              className="select w-full h-8 text-xs py-1 px-2 rounded-lg"
               value={filter.clientId}
               onChange={e => setFilter({ ...filter, clientId: e.target.value })}
             >
@@ -378,9 +408,9 @@ export default function CapacityPage() {
 
           {/* PIC */}
           <div>
-            <label className="text-[11px] text-[var(--text-muted)] font-medium mb-1 block">PIC / Designer</label>
+            <label className="text-[10px] text-[var(--text-muted)] font-bold uppercase mb-0.5 block">PIC / Designer</label>
             <select
-              className="select w-full text-xs py-1.5 px-2 rounded-lg"
+              className="select w-full h-8 text-xs py-1 px-2 rounded-lg"
               value={filter.picId}
               onChange={e => setFilter({ ...filter, picId: e.target.value })}
             >
@@ -393,9 +423,9 @@ export default function CapacityPage() {
 
           {/* Task Source */}
           <div>
-            <label className="text-[11px] text-[var(--text-muted)] font-medium mb-1 block">Task Source</label>
+            <label className="text-[10px] text-[var(--text-muted)] font-bold uppercase mb-0.5 block">Task Source</label>
             <select
-              className="select w-full text-xs py-1.5 px-2 rounded-lg"
+              className="select w-full h-8 text-xs py-1 px-2 rounded-lg"
               value={filter.taskSource}
               onChange={e => setFilter({ ...filter, taskSource: e.target.value })}
             >
@@ -407,9 +437,9 @@ export default function CapacityPage() {
 
           {/* Content Type */}
           <div>
-            <label className="text-[11px] text-[var(--text-muted)] font-medium mb-1 block">Content Type</label>
+            <label className="text-[10px] text-[var(--text-muted)] font-bold uppercase mb-0.5 block">Content Type</label>
             <select
-              className="select w-full text-xs py-1.5 px-2 rounded-lg"
+              className="select w-full h-8 text-xs py-1 px-2 rounded-lg"
               value={filter.contentTypeId}
               onChange={e => setFilter({ ...filter, contentTypeId: e.target.value })}
             >
@@ -420,9 +450,9 @@ export default function CapacityPage() {
 
           {/* Difficulty */}
           <div>
-            <label className="text-[11px] text-[var(--text-muted)] font-medium mb-1 block">Difficulty</label>
+            <label className="text-[10px] text-[var(--text-muted)] font-bold uppercase mb-0.5 block">Difficulty</label>
             <select
-              className="select w-full text-xs py-1.5 px-2 rounded-lg"
+              className="select w-full h-8 text-xs py-1 px-2 rounded-lg"
               value={filter.difficulty}
               onChange={e => setFilter({ ...filter, difficulty: e.target.value })}
             >
@@ -435,9 +465,9 @@ export default function CapacityPage() {
 
           {/* Operational Excellence */}
           <div>
-            <label className="text-[11px] text-[var(--text-muted)] font-medium mb-1 block">SLA Excellence</label>
+            <label className="text-[10px] text-[var(--text-muted)] font-bold uppercase mb-0.5 block">SLA Excellence</label>
             <select
-              className="select w-full text-xs py-1.5 px-2 rounded-lg"
+              className="select w-full h-8 text-xs py-1 px-2 rounded-lg"
               value={filter.operationalExcellence}
               onChange={e => setFilter({ ...filter, operationalExcellence: e.target.value })}
             >
@@ -450,9 +480,9 @@ export default function CapacityPage() {
 
           {/* Status */}
           <div>
-            <label className="text-[11px] text-[var(--text-muted)] font-medium mb-1 block">Task Status</label>
+            <label className="text-[10px] text-[var(--text-muted)] font-bold uppercase mb-0.5 block">Task Status</label>
             <select
-              className="select w-full text-xs py-1.5 px-2 rounded-lg"
+              className="select w-full h-8 text-xs py-1 px-2 rounded-lg"
               value={filter.status}
               onChange={e => setFilter({ ...filter, status: e.target.value })}
             >
@@ -466,7 +496,7 @@ export default function CapacityPage() {
       </div>
 
       {/* TAB NAVIGATION */}
-      <div className="flex items-center gap-2 border-b border-[var(--border-primary)] overflow-x-auto no-scrollbar pb-px">
+      <div className="flex items-center gap-1.5 border-b border-[var(--border-primary)] overflow-x-auto no-scrollbar pb-px">
         {[
           { id: 'OVERVIEW', label: 'Executive Summary', icon: LayoutDashboardIcon },
           { id: 'OCCUPANCY', label: '1. Team Occupancy', icon: Users },
@@ -480,14 +510,14 @@ export default function CapacityPage() {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id as AnalyticsTab)}
-              className={`flex items-center gap-2 px-4 py-3 text-sm font-semibold border-b-2 transition-all shrink-0 cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold border-b-2 transition-all shrink-0 cursor-pointer ${
                 isActive
                   ? 'border-[var(--accent-blue)] text-[var(--accent-blue)] bg-blue-500/5'
                   : 'border-transparent text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
               }`}
-              style={{ borderTopLeftRadius: '10px', borderTopRightRadius: '10px' }}
+              style={{ borderTopLeftRadius: '8px', borderTopRightRadius: '8px' }}
             >
-              <Icon className="w-4 h-4" />
+              <Icon className="w-3.5 h-3.5" />
               <span>{tab.label}</span>
             </button>
           );

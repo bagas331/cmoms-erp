@@ -1,33 +1,7 @@
 import { NextResponse } from 'next/server';
-import { getNotifications, getUsers } from '@/lib/supabase-store';
+import { getNotifications } from '@/lib/supabase-store';
+import { resolveAuthenticatedUser } from '@/lib/server-auth';
 import { Notification } from '@/lib/types';
-
-/**
- * Helper to resolve user from request headers or query.
- */
-async function resolveUser(req: Request) {
-  const userIdHeader = req.headers.get('x-user-id');
-  const userRoleHeader = req.headers.get('x-user-role');
-  const userNameHeader = req.headers.get('x-user-name');
-
-  if (userIdHeader) {
-    return {
-      id: userIdHeader,
-      role_name: userRoleHeader || 'MEMBER',
-      full_name: userNameHeader || 'User'
-    };
-  }
-
-  const url = new URL(req.url);
-  const queryUserId = url.searchParams.get('userId');
-  if (queryUserId) {
-    const allUsers = await getUsers();
-    const matched = allUsers.find(u => u.id === queryUserId);
-    if (matched) return matched;
-  }
-
-  return null;
-}
 
 /**
  * GET /api/notifications
@@ -36,7 +10,7 @@ async function resolveUser(req: Request) {
  */
 export async function GET(req: Request) {
   try {
-    const user = await resolveUser(req);
+    const user = await resolveAuthenticatedUser(req);
     if (!user) {
       return NextResponse.json(
         { success: false, message: 'Autentikasi diperlukan untuk mengakses notifikasi' },

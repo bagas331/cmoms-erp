@@ -12,14 +12,22 @@ import {
   Presentation,
   Film,
   ExternalLink,
-  AlertTriangle
+  AlertTriangle,
+  Sparkles,
+  Compass,
+  ArrowRight,
+  Image as ImageIcon,
+  Loader2,
+  Trash2
 } from 'lucide-react';
 import {
   TaskWithRelations,
   User as UserType,
   DesignStatus,
-  StratStatus
+  StratStatus,
+  PipelineType
 } from '@/lib/types';
+import { canUserRestoreTask } from '@/lib/archive-engine';
 import {
   formatDisplayDate,
   formatDisplayDateTime,
@@ -28,7 +36,9 @@ import {
   getPriorityDetails,
   getSLAFormatted,
   getQuantityStatus,
-  sanitizeUrl
+  sanitizeUrl,
+  extractErrorMessage,
+  canUserDeleteTask
 } from '@/lib/utils';
 import {
   STRAT_STATUS_LABELS,
@@ -39,9 +49,11 @@ import {
 
 export interface RequestKanbanCardProps {
   task: TaskWithRelations;
+  currentPipeline?: PipelineType;
   isMovable?: boolean;
   isBeingDragged?: boolean;
   isArchive?: boolean;
+  isReadOnly?: boolean;
   user?: UserType | null;
   onDragStart?: (e: React.DragEvent) => void;
   onDragEnd?: () => void;
@@ -54,13 +66,18 @@ export interface RequestKanbanCardProps {
   onStratRevise?: (taskId: string) => void;
   onStartWork?: (taskId: string) => void;
   onMoveToMotion?: (taskId: string) => void;
+  onRestore?: (taskId: string) => void;
+  onHandoverToGD?: (taskId: string) => void;
+  onDelete?: (taskId: string, taskCode?: string, clientName?: string) => void;
 }
 
 export function RequestKanbanCard({
   task,
+  currentPipeline = 'GD_MOCKUP',
   isMovable = false,
   isBeingDragged = false,
   isArchive = false,
+  isReadOnly = false,
   user,
   onDragStart,
   onDragEnd,
@@ -71,14 +88,26 @@ export function RequestKanbanCard({
   onStratApprove,
   onStratRevise,
   onStartWork,
-  onMoveToMotion
+  onMoveToMotion,
+  onRestore,
+  onHandoverToGD,
+  onDelete
 }: RequestKanbanCardProps) {
+  const [isForwarding, setIsForwarding] = React.useState(false);
+  const canDelete = canUserDeleteTask(user, task);
   const isFinished = task.status_design === 'DESIGN_APPROVED' || task.status_design === 'TASK_CLOSED';
   const dueInfo = getDueDateSemanticStatus(task.due_date, isFinished);
   const priorityInfo = getPriorityDetails(task.priority, task.design_difficulty, dueInfo.isOverdue);
   const slaInfo = getSLAFormatted(task.sla_working_days, dueInfo.isOverdue, dueInfo.overdueDays);
   const qtyStatus = getQuantityStatus(task.req_qty, task.output_qty);
   const approvalTimestamp = task.approved_at || task.submission_date || task.updated_at || task.created_at;
+
+  // Creative Brief & Objective image preview
+  const briefAttachments = (task.attachments || []).filter(
+    att => (att.section === 'brief' || !att.section) &&
+           (!att.type || att.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(att.url || att.name))
+  );
+  const primaryBriefImage = briefAttachments[0];
 
   // Action button visibility logic
   const hasStratPic = Boolean(task.strat_pic_id || (task.strat_pic_ids && task.strat_pic_ids.length > 0));
@@ -89,12 +118,34 @@ export function RequestKanbanCard({
       ['ADMIN', 'TEAM_LEAD'].includes(user.role_name))
   );
 
-  const showMotionAction = !isArchive && task.status_design === 'DESIGN_APPROVED';
-  const showStratActions = !isArchive && task.status_design === 'STRAT_PENDING' && user;
-  const showAssignDesignAction = !isArchive && task.status_design === 'DESIGN_UNASSIGNED' && user && ['ADMIN', 'TEAM_LEAD'].includes(user.role_name);
-  const showStartWorkAction = !isArchive && task.status_design === 'DESIGN_ASSIGNED' && user && (task.design_pic_id === user.id || ['ADMIN', 'TEAM_LEAD'].includes(user.role_name));
+  const isStrategicPipeline = currentPipeline === 'STRATEGIC';
+  const isDesignPipeline = currentPipeline === 'GD_MOCKUP' || currentPipeline === 'GD_NON_MOCKUP';
 
-  const hasAnyActions = showMotionAction || showStratActions || showAssignDesignAction || showStartWorkAction;
+  const isStrategicTask = task.pipeline_type === 'STRATEGIC' || Boolean(task.requires_strategic_concept && task.status_strat !== 'NOT_REQUIRED');
+  const canUserActOnStrat = Boolean(
+    user && (
+      ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) ||
+      isUserStratPic ||
+      (user.role_name === 'REQUESTER' && task.created_by === user.id)
+    )
+  );
+
+  const showMotionAction = !isReadOnly && !isArchive && isDesignPipeline && task.status_design === 'DESIGN_APPROVED';
+
+  // Strategic actions: show in Strategic Pipeline while concept is active (PENDING, IN_PROGRESS, REVIEW, REVISION)
+  const showStratActions = !isArchive && isStrategicTask && canUserActOnStrat && task.status_strat !== 'APPROVED';
+
+  // Strategic Handover to GD: when concept is APPROVED in Strategic Pipeline
+  const showStrategicHandoverAction = !isArchive && isStrategicPipeline && task.status_strat === 'APPROVED' && !isReadOnly && Boolean(onHandoverToGD);
+
+  // Design assign action: strictly in design pipelines (NOT in Strategic pipeline)
+  const showAssignDesignAction = !isReadOnly && !isArchive && !isStrategicPipeline && task.pipeline_type !== 'STRATEGIC' && task.status_design === 'DESIGN_UNASSIGNED' && user && ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name);
+
+  // Start work action: strictly in design pipelines (NOT in Strategic pipeline)
+  const showStartWorkAction = !isReadOnly && !isArchive && !isStrategicPipeline && task.pipeline_type !== 'STRATEGIC' && task.status_design === 'DESIGN_ASSIGNED' && user && (task.design_pic_id === user.id || ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name));
+
+  const hasAnyActions = showMotionAction || showStratActions || showStrategicHandoverAction || showAssignDesignAction || showStartWorkAction;
+
 
   return (
     <div
@@ -151,6 +202,20 @@ export function RequestKanbanCard({
                 </span>
               </>
             )}
+
+            {canDelete && onDelete && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(task.id, task.task_code, task.client_name);
+                }}
+                className="opacity-0 group-hover:opacity-100 p-1 rounded text-[var(--text-muted)] hover:text-rose-400 hover:bg-rose-500/10 transition-all cursor-pointer"
+                title="Hapus request ini"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -176,16 +241,16 @@ export function RequestKanbanCard({
         {/* ============================================================
             LEVEL 3 & 4: WORK METADATA (Content Type + Source & Qty Chips)
             ============================================================ */}
-        <div className="flex flex-wrap items-center gap-1.5 mb-2.5">
+        <div className="flex flex-wrap items-center gap-1 mb-2">
           {/* Content Type Chip */}
           {task.content_type_name && (
-            <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-semibold rounded-md bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border-secondary)]">
+            <span className="inline-flex items-center px-1.5 py-0.2 text-[9.5px] font-semibold rounded bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border-secondary)]">
               {task.content_type_name}
             </span>
           )}
 
           {/* Source & Qty Chip */}
-          <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-medium rounded-md bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border-secondary)]">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.2 text-[9.5px] font-medium rounded bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border-secondary)]">
             <span>{task.task_source || 'Orca'}</span>
             <span className="opacity-40">·</span>
             <span className={qtyStatus.hasDiscrepancy ? "text-amber-500 font-bold" : "text-[var(--text-primary)] font-semibold"}>
@@ -195,101 +260,156 @@ export function RequestKanbanCard({
 
           {/* Quantity Discrepancy Alert Tag */}
           {qtyStatus.hasDiscrepancy && (
-            <span className="text-[9px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/20 px-1.5 py-0.5 rounded flex items-center gap-0.5">
+            <span className="text-[8.5px] font-bold text-amber-500 bg-amber-500/10 border border-amber-500/20 px-1 py-0.2 rounded flex items-center gap-0.5">
               <AlertTriangle className="w-2.5 h-2.5" />
               <span>{qtyStatus.remaining} rem</span>
             </span>
           )}
 
-          {/* Difficulty Badge (if active & present) */}
+          {/* Difficulty Badge (if present) */}
           {task.design_difficulty && (
-            <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${DIFFICULTY_COLORS[task.design_difficulty]}`}>
+            <span className={`text-[8.5px] font-semibold px-1 py-0.2 rounded border ${DIFFICULTY_COLORS[task.design_difficulty]}`}>
               {DIFFICULTY_LABELS[task.design_difficulty]}
             </span>
           )}
 
           {/* Operational Excellence Badge (if present) */}
           {task.operational_excellence && (
-            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${EXCELLENCE_COLORS[task.operational_excellence]}`}>
+            <span className={`text-[8.5px] font-bold px-1 py-0.2 rounded border ${EXCELLENCE_COLORS[task.operational_excellence]}`}>
               {task.operational_excellence}
+            </span>
+          )}
+
+          {/* Strategic Deck Link (if available) */}
+          {task.strat_concept_link && (
+            <a
+              href={sanitizeUrl(task.strat_concept_link)}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center gap-0.5 text-[8.5px] font-semibold text-purple-300 bg-purple-500/15 border border-purple-500/30 px-1 py-0.2 rounded hover:bg-purple-500/25 transition-colors"
+              title={task.strat_concept_name || "Buka Deck Strategi"}
+            >
+              <Presentation className="w-2.5 h-2.5" />
+              <span>Deck</span>
+              <ExternalLink className="w-2 h-2 opacity-70" />
+            </a>
+          )}
+
+          {/* Final Asset Link (if available) */}
+          {task.final_asset_link && (
+            <a
+              href={sanitizeUrl(task.final_asset_link)}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center gap-0.5 text-[8.5px] font-semibold text-blue-300 bg-blue-500/15 border border-blue-500/30 px-1 py-0.2 rounded hover:bg-blue-500/25 transition-colors"
+              title={task.final_asset_name || "Buka Asset Desain GD"}
+            >
+              <ExternalLink className="w-2.5 h-2.5" />
+              <span>Asset</span>
+            </a>
+          )}
+
+          {/* Linkage badge: Strategic Task spawned to design pipeline */}
+          {isStrategicPipeline && task.status_strat === 'APPROVED' && (
+            <span className="inline-flex items-center gap-1 text-[8.5px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-1 py-0.2 rounded" title={`Task desain di ${task.task_source === 'ECOMMERCE' ? 'Ecommerce Pipeline' : 'Mockup Pipeline'}`}>
+              <Sparkles className="w-2.5 h-2.5" />
+              <span>{task.task_source === 'ECOMMERCE' ? 'Ecommerce' : 'Mockup'}</span>
+            </span>
+          )}
+
+          {/* Linkage badge: Spawned Design Task from Strategic */}
+          {task.source_strategic_task_id && (
+            <span className="inline-flex items-center gap-1 text-[8.5px] font-semibold text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-1 py-0.2 rounded" title="Dibuat dari Strategic Concept">
+              <Compass className="w-2.5 h-2.5" />
+              <span>From Strat</span>
             </span>
           )}
         </div>
 
         {/* ============================================================
+            CREATIVE BRIEF & OBJECTIVE IMAGE PREVIEW BANNER
+            ============================================================ */}
+        {primaryBriefImage && (
+          <div className="mb-2.5 overflow-hidden rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-tertiary)] relative group/preview shadow-2xs">
+            <div className="relative w-full h-28 sm:h-32 bg-black/10 dark:bg-black/30 flex items-center justify-center overflow-hidden">
+              <img
+                src={primaryBriefImage.url.startsWith('http') || primaryBriefImage.url.startsWith('/') ? primaryBriefImage.url : `/${primaryBriefImage.url}`}
+                alt={primaryBriefImage.name || 'Creative Brief Preview'}
+                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 pointer-events-none"
+                draggable={false}
+                loading="lazy"
+                onError={e => {
+                  (e.target as HTMLElement).style.display = 'none';
+                }}
+              />
+
+              {/* Multi-photo indicator badge if more than 1 photo */}
+              {briefAttachments.length > 1 && (
+                <div className="absolute bottom-1.5 right-1.5 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/60 backdrop-blur-xs text-white text-[9px] font-semibold border border-white/10 shadow-xs pointer-events-none">
+                  <ImageIcon className="w-2.5 h-2.5" />
+                  <span>+{briefAttachments.length - 1} Foto</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================
             LEVEL 2: TIMELINE SECTION (DUE DATE & SLA)
             ============================================================ */}
-        <div className="pt-2.5 border-t border-[var(--border-secondary)] mb-2.5">
+        <div className="pt-2 border-t border-[var(--border-secondary)] mb-1.5">
           {isArchive ? (
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)] block">
-                  Approved At
+            <div className="flex items-center justify-between gap-1.5 text-xs">
+              <div className="flex items-center gap-1">
+                <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)]">Approved:</span>
+                <span className="text-[11px] font-semibold text-[var(--text-primary)]">
+                  {formatDisplayDate(approvalTimestamp)}
                 </span>
-                <div className="flex flex-col mt-0.5">
-                  <span className="text-xs font-semibold text-[var(--text-primary)]">
-                    {formatDisplayDate(approvalTimestamp)}
-                  </span>
-                  <span className="text-[9px] text-[var(--text-muted)] font-mono">
-                    {approvalTimestamp ? new Date(approvalTimestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':') + ' WIB' : ''}
-                  </span>
-                </div>
               </div>
-
-              <div>
-                <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)] block">
-                  SLA Quality
-                </span>
-                <div className="flex items-center gap-1 mt-1">
-                  {task.operational_excellence ? (
-                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${EXCELLENCE_COLORS[task.operational_excellence]}`}>
-                      {task.operational_excellence}
-                    </span>
-                  ) : (
-                    <span className="text-xs font-medium text-[var(--text-muted)]">
-                      {task.sla_working_days ? `${task.sla_working_days} working days` : 'Standard'}
-                    </span>
-                  )}
-                  {task.final_asset_link && (
-                    <a
-                      href={sanitizeUrl(task.final_asset_link)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="p-1 rounded bg-blue-500/10 text-[var(--accent-blue)] hover:bg-blue-500/20 transition-colors ml-auto"
-                      title="Buka Drive Asset"
-                    >
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  )}
-                </div>
+              <div className="flex items-center gap-1">
+                {task.operational_excellence ? (
+                  <span className={`text-[8.5px] font-bold px-1 py-0.2 rounded border ${EXCELLENCE_COLORS[task.operational_excellence]}`}>
+                    {task.operational_excellence}
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-[var(--text-muted)]">
+                    {task.sla_working_days ? `${task.sla_working_days}d SLA` : 'Standard'}
+                  </span>
+                )}
+                {task.final_asset_link && (
+                  <a
+                    href={sanitizeUrl(task.final_asset_link)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="p-0.5 rounded bg-blue-500/10 text-[var(--accent-blue)] hover:bg-blue-500/20 transition-colors"
+                    title="Buka Drive Asset"
+                  >
+                    <ExternalLink className="w-2.5 h-2.5" />
+                  </a>
+                )}
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-2">
-              {/* Due Date Column */}
-              <div>
-                <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)] block">
-                  Due Date
+            <div className="flex items-center justify-between gap-1.5 text-xs">
+              {/* Due Date */}
+              <div className="flex items-center gap-1 min-w-0">
+                <Clock className="w-3 h-3 text-[var(--text-muted)] shrink-0" />
+                <span className={`text-[11px] font-medium ${dueInfo.textClass}`}>
+                  {dueInfo.formattedDate}
                 </span>
-                <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-                  <span className={`text-xs ${dueInfo.textClass}`}>
-                    {dueInfo.formattedDate}
+                {dueInfo.badge && (
+                  <span className={`text-[8px] px-1 py-0.2 rounded shrink-0 ${dueInfo.badgeClass}`}>
+                    {dueInfo.badge}
                   </span>
-                  {dueInfo.badge && (
-                    <span className={`text-[8px] px-1 py-0.2 rounded shrink-0 ${dueInfo.badgeClass}`}>
-                      {dueInfo.badge}
-                    </span>
-                  )}
-                </div>
+                )}
               </div>
 
-              {/* SLA Column */}
-              <div>
-                <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)] block">
-                  SLA
-                </span>
-                <span className={`text-xs font-medium mt-0.5 block ${slaInfo.isWarning ? 'text-rose-500 font-bold' : slaInfo.isCalculated ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+              {/* SLA */}
+              <div className="shrink-0 text-[10.5px]">
+                <span className={`font-medium ${slaInfo.isWarning ? 'text-rose-500 font-bold' : slaInfo.isCalculated ? 'text-[var(--text-secondary)]' : 'text-[var(--text-muted)]'}`}>
                   {slaInfo.text}
                 </span>
               </div>
@@ -298,66 +418,54 @@ export function RequestKanbanCard({
         </div>
 
         {/* ============================================================
-            LEVEL 3: PEOPLE SECTION (AE, Strategic & GD PIC)
+            LEVEL 3: PEOPLE SECTION (AE & PIC INLINE)
             ============================================================ */}
-        <div className="pt-2.5 border-t border-[var(--border-secondary)] space-y-1.5">
+        <div className="pt-1.5 border-t border-[var(--border-secondary)] flex items-center justify-between gap-1.5 text-xs">
           {/* AE (Requester) */}
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)]">
-              AE
+          <div className="flex items-center gap-1 min-w-0" title={`Requester: ${task.created_by_name || 'AE'}`}>
+            <span className="text-[9px] uppercase font-bold text-[var(--text-muted)]">AE:</span>
+            <span className="text-[10.5px] font-medium text-[var(--text-secondary)] truncate max-w-[90px]">
+              {task.created_by_name || 'AE'}
             </span>
-            <div className="flex items-center gap-1.5 truncate max-w-[150px]">
-              <div className="w-4 h-4 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] flex items-center justify-center text-[8px] font-bold text-[var(--text-secondary)] shrink-0">
-                {getInitials(task.created_by_name || 'AE')}
-              </div>
-              <span className="text-xs font-medium text-[var(--text-secondary)] truncate">
-                {task.created_by_name || 'AE'}
-              </span>
-            </div>
           </div>
 
-          {/* Strategic PIC (if applicable) */}
-          {task.requires_strategic_concept && (
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-[9px] uppercase tracking-wider font-bold text-purple-400">
-                Strategic
-              </span>
-              <div className="flex items-center gap-1.5 truncate max-w-[150px]">
-                <div className="w-4 h-4 rounded-full bg-purple-500/20 text-purple-400 border border-purple-500/30 flex items-center justify-center text-[8px] font-bold shrink-0">
-                  {getInitials(task.strat_pic_name || 'S')}
+          {/* Assigned PIC */}
+          <div className="flex items-center gap-1 shrink-0">
+            {isStrategicPipeline ? (
+              task.strat_pic_name ? (
+                <div className="flex items-center gap-1" title={`Strategic PIC: ${task.strat_pic_name}`}>
+                  <div className="w-4 h-4 rounded-full bg-purple-500/20 text-purple-400 border border-purple-500/30 flex items-center justify-center text-[7.5px] font-bold shrink-0">
+                    {getInitials(task.strat_pic_name)}
+                  </div>
+                  <span className="text-[10.5px] font-medium text-purple-300 truncate max-w-[80px]">
+                    {task.strat_pic_name}
+                  </span>
                 </div>
-                <span className="text-xs font-medium text-purple-300 truncate">
-                  {task.strat_pic_name || 'Unassigned'}
+              ) : (
+                <span className="text-[10px] italic text-[var(--text-muted)]">Unassigned</span>
+              )
+            ) : task.design_pic_name ? (
+              <div className="flex items-center gap-1" title={`GD PIC: ${task.design_pic_name}`}>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                <div className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center text-[7.5px] font-bold shrink-0">
+                  {getInitials(task.design_pic_name)}
+                </div>
+                <span className="text-[10.5px] font-semibold text-[var(--text-primary)] truncate max-w-[80px]">
+                  {task.design_pic_name}
                 </span>
               </div>
-            </div>
-          )}
-
-          {/* GD PIC */}
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)]">
-              GD PIC
-            </span>
-            <div className="flex items-center gap-1.5 truncate max-w-[150px]">
-              {task.design_pic_name ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                  <div className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center text-[8px] font-bold shrink-0">
-                    {getInitials(task.design_pic_name)}
-                  </div>
-                  <span className="text-xs font-bold text-[var(--text-primary)] truncate">
-                    {task.design_pic_name}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-500 shrink-0" />
-                  <span className="text-xs italic text-[var(--text-muted)]">
-                    Unassigned
-                  </span>
-                </>
-              )}
-            </div>
+            ) : task.strat_pic_name ? (
+              <div className="flex items-center gap-1" title={`Strategic PIC: ${task.strat_pic_name}`}>
+                <div className="w-4 h-4 rounded-full bg-purple-500/20 text-purple-400 border border-purple-500/30 flex items-center justify-center text-[7.5px] font-bold shrink-0">
+                  {getInitials(task.strat_pic_name)}
+                </div>
+                <span className="text-[10.5px] font-medium text-purple-300 truncate max-w-[80px]">
+                  {task.strat_pic_name}
+                </span>
+              </div>
+            ) : (
+              <span className="text-[10px] italic text-[var(--text-muted)]">Unassigned</span>
+            )}
           </div>
         </div>
       </div>
@@ -367,7 +475,7 @@ export function RequestKanbanCard({
           ============================================================ */}
       {hasAnyActions && (
         <div
-          className="mt-2.5 pt-2 border-t border-[var(--border-secondary)] flex flex-wrap items-center gap-1.5"
+          className="mt-2 pt-1.5 border-t border-[var(--border-secondary)] flex flex-wrap items-center gap-1"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Move to Motion */}
@@ -378,10 +486,27 @@ export function RequestKanbanCard({
               </span>
             ) : (
               <button
-                onClick={() => onMoveToMotion?.(task.id)}
-                className="btn-ghost text-[11px] py-1 px-2 text-pink-400 hover:bg-pink-500/10 flex items-center gap-1 font-medium"
+                disabled={isForwarding || !onMoveToMotion}
+                onClick={async (event) => {
+                  event.stopPropagation();
+                  if (!onMoveToMotion || isForwarding) return;
+                  if (!window.confirm(`Teruskan request ${task.task_code} ke Motion Pipeline?`)) return;
+
+                  setIsForwarding(true);
+                  try {
+                    await onMoveToMotion(task.id);
+                  } catch (error) {
+                    const message = extractErrorMessage(error);
+                    window.alert(`Gagal meneruskan request ke Motion: ${message}`);
+                  } finally {
+                    setIsForwarding(false);
+                  }
+                }}
+                className="btn-ghost text-[11px] py-1 px-2 text-pink-400 hover:bg-pink-500/10 disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-1 font-medium"
+                title="Teruskan request yang telah disetujui ke antrean Motion"
               >
-                <Film className="w-3 h-3" /> Move to Motion
+                {isForwarding ? <Loader2 className="w-3 h-3 animate-spin" /> : <Film className="w-3 h-3" />}
+                {isForwarding ? 'Forwarding...' : 'Forward to Motion Pipeline'}
               </button>
             )
           )}
@@ -389,7 +514,7 @@ export function RequestKanbanCard({
           {/* Strategic Workflow Actions */}
           {showStratActions && (
             <>
-              {!hasStratPic && user && ['ADMIN', 'TEAM_LEAD'].includes(user.role_name) && (
+              {!hasStratPic && user && ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) && (
                 <button
                   onClick={() => onAssignClick?.(task.id)}
                   className="btn-ghost text-[11px] py-1 px-2 text-blue-400 font-medium flex items-center gap-1"
@@ -397,7 +522,7 @@ export function RequestKanbanCard({
                   <User className="w-3 h-3" /> Assign Strat PIC
                 </button>
               )}
-              {task.status_strat === 'PENDING' && hasStratPic && isUserStratPic && (
+              {task.status_strat === 'PENDING' && hasStratPic && user && (isUserStratPic || ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) && (
                 <button
                   onClick={() => onStratStart?.(task.id)}
                   className="btn-ghost text-[11px] py-1 px-2 text-cyan-400 font-medium flex items-center gap-1"
@@ -405,31 +530,78 @@ export function RequestKanbanCard({
                   <Play className="w-3 h-3" /> Start Strat
                 </button>
               )}
-              {(task.status_strat === 'IN_PROGRESS' || task.status_strat === 'REVISION') && isUserStratPic && (
+              {(task.status_strat === 'IN_PROGRESS' || task.status_strat === 'REVISION') && user && (isUserStratPic || ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) && (
                 <button
                   onClick={() => onStratSubmit?.(task.id)}
                   className="btn-ghost text-[11px] py-1 px-2 text-emerald-400 font-medium flex items-center gap-1"
                 >
-                  <Presentation className="w-3 h-3" /> Submit Deck
+                  <Presentation className="w-3 h-3" /> {task.status_strat === 'REVISION' ? 'Resubmit Deck' : 'Submit Deck'}
                 </button>
               )}
-              {task.status_strat === 'REVIEW' && user && ['ADMIN', 'TEAM_LEAD', 'REQUESTER'].includes(user.role_name) && (
-                <>
+              {task.status_strat === 'REVIEW' && user && (['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) || (user.role_name === 'REQUESTER' && task.created_by === user.id)) && (
+                <div className="flex items-center gap-1.5 flex-wrap">
                   <button
-                    onClick={() => onStratApprove?.(task.id)}
-                    className="btn-ghost text-[11px] py-1 px-2 text-emerald-400 font-medium flex items-center gap-1"
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onStratRevise?.(task.id);
+                    }}
+                    className="btn-ghost text-[11px] py-1 px-2 text-amber-400 hover:bg-amber-500/10 border border-amber-500/20 rounded-md font-medium flex items-center gap-1 cursor-pointer"
+                    title="Minta revisi konsep strategi"
+                  >
+                    <RotateCcw className="w-3 h-3" /> Revisi
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onStratApprove?.(task.id);
+                    }}
+                    className="btn-ghost text-[11px] py-1 px-2 text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20 rounded-md font-medium flex items-center gap-1 cursor-pointer"
+                    title="Setujui konsep strategi"
                   >
                     <CheckCircle2 className="w-3 h-3" /> Approve Strat
                   </button>
-                  <button
-                    onClick={() => onStratRevise?.(task.id)}
-                    className="btn-ghost text-[11px] py-1 px-2 text-amber-400 font-medium flex items-center gap-1"
-                  >
-                    <RotateCcw className="w-3 h-3" /> Revise
-                  </button>
-                </>
+                </div>
               )}
             </>
+          )}
+
+          {/* Strategic Handover to GD Action (Approved Column in Strategic Pipeline) */}
+          {showStrategicHandoverAction && (
+            <div className="w-full flex items-center justify-between gap-1.5 pt-0.5">
+              {task.spawned_design_task_id ? (
+                <div className="w-full flex items-center justify-between gap-1.5 flex-wrap">
+                  <span className="text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400" /> Dialihkan ke GD {task.design_pic_name ? `(${task.design_pic_name})` : ''}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onHandoverToGD?.(task.id);
+                    }}
+                    className="btn-ghost text-[10px] py-1 px-2 text-cyan-400 hover:bg-cyan-500/10 border border-cyan-500/20 rounded-md font-medium flex items-center gap-1 cursor-pointer"
+                    title="Ubah GD PIC atau alihkan ulang"
+                  >
+                    <User className="w-2.5 h-2.5" /> Ganti GD PIC
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onHandoverToGD?.(task.id);
+                  }}
+                  className="w-full py-1.5 px-3 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] rounded-lg shadow-sm border border-emerald-500/40 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                  title="Alihkan konsep ini ke Graphic Design dan tetapkan GD PIC"
+                >
+                  <ArrowRight className="w-3.5 h-3.5" />
+                  <span>Alihkan ke GD</span>
+                </button>
+              )}
+            </div>
           )}
 
           {/* Design Assign Action */}
@@ -438,7 +610,7 @@ export function RequestKanbanCard({
               onClick={() => onAssignClick?.(task.id)}
               className="btn-ghost text-[11px] py-1 px-2 text-blue-400 font-medium flex items-center gap-1"
             >
-              <User className="w-3 h-3" /> {task.design_pic_id ? 'Confirm Assignment' : 'Assign Design PIC'}
+              <User className="w-3 h-3" /> {task.design_pic_id ? 'Confirm Assignment' : (isStrategicPipeline ? 'Assign GD PIC' : 'Assign Design PIC')}
             </button>
           )}
 
@@ -448,7 +620,29 @@ export function RequestKanbanCard({
               onClick={() => onStartWork?.(task.id)}
               className="btn-ghost text-[11px] py-1 px-2 text-cyan-400 font-medium flex items-center gap-1"
             >
-              <Play className="w-3 h-3" /> Start Work
+              <Play className="w-3 h-3" /> {isStrategicPipeline ? 'Start GD Work' : 'Start Work'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Archive / Restore Footer */}
+      {(isArchive || task.is_archived) && (
+        <div className="mt-2.5 pt-2 border-t border-[var(--border-secondary)] flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
+            Arsip ({task.archive_period || 'Selesai'})
+          </span>
+          {user && canUserRestoreTask(user.role_name, user.id, task) && onRestore && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onRestore(task.id);
+              }}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/30 transition-all shadow-sm"
+              title="Pulihkan task dari arsip ke board kerja aktif"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Restore</span>
             </button>
           )}
         </div>

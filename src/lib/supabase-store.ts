@@ -8,16 +8,24 @@ import { supabase } from './supabase';
 import {
   TaskComment, AuditLog, Client, ContentType, CreativeTask, Holiday,
   MotionTask, Notification, Role, TaskRevision, User,
-  TaskWithRelations, CreateTaskInput, AssignTaskInput, SubmitTaskInput, RevisionInput,
+  TaskWithRelations, CreateTaskInput, AssignTaskInput, HandoverStrategicToGDInput, SubmitTaskInput, RevisionInput,
   DesignStatus, MotionStatus, AuditAction, DesignerWorkload, DashboardStats,
   ClientType, RoleName, DesignDifficulty, MotionDifficulty, Platform,
-  StratStatus, SubmitStrategicInput, NotificationType
+  StratStatus, SubmitStrategicInput, NotificationType, PipelineType, TaskAttachment,
+  WeeklyIssue, CreateWeeklyIssueInput
 } from './types';
-import { DIFFICULTY_WEIGHTS, DESIGN_STATUS_LABELS, MOTION_STATUS_LABELS } from './constants';
+
+import { DIFFICULTY_WEIGHTS, DESIGN_STATUS_LABELS, MOTION_STATUS_LABELS, CAMPAIGN_NAMES, isValidCampaignName, normalizeCampaignName } from './constants';
 import { calculateBusinessDays, evaluateOperationalExcellence } from './sla-engine';
-import { generateTaskCode, getCurrentYear, safeJsonParse, sanitizeUrl, sanitizeChatMessage, validateChatAttachment, sanitizeChatMediaUrl } from './utils';
+import { generateUUID, generateTaskCode, getCurrentYear, safeJsonParse, sanitizeUrl, sanitizeChatMessage, validateChatAttachment, sanitizeChatMediaUrl } from './utils';
 import { checkRateLimit } from './rate-limiter';
 import { canUserAccessTaskChat, canUserEditComment, canUserDeleteComment } from './chat-auth';
+import { determineTaskPipeline, isMockupTask, canForwardToMotion } from './pipeline-router';
+import {
+  enqueueGoogleSheetsSync,
+  buildTaskSyncPayload,
+  buildMotionTaskSyncPayload
+} from './google-sheets-outbox';
 
 import * as localStore from './store';
 
@@ -30,6 +38,7 @@ interface CacheEntry<T> {
 const memoryCache = new Map<string, CacheEntry<any>>();
 const inFlightPromises = new Map<string, Promise<any>>();
 const DEFAULT_CACHE_TTL_MS = 2500; // 2.5 seconds cache for fast page transitions & parallel components
+const motionForwardInFlight = new Map<string, Promise<void>>();
 
 export function invalidateStoreCache(keyPrefix?: string): void {
   if (!keyPrefix) {
@@ -121,14 +130,18 @@ export async function getContentTypes(): Promise<ContentType[]> {
 }
 
 export async function getHolidays(): Promise<Holiday[]> {
-  return cachedFetch('holidays', async () => {
+  const holidays = await cachedFetch('holidays', async () => {
     if (supabase) {
       try {
         const { data, error } = await supabase.from('holidays').select('*');
         if (!error && data && data.length > 0) {
           return (data || []).map((h: any) => ({
             ...h,
-            holiday_date: h.holiday_date || h.date
+            holiday_date: h.holiday_date || h.date,
+            is_cuti_bersama: h.is_cuti_bersama !== undefined
+              ? h.is_cuti_bersama
+              : /cuti bersama/i.test(h.description || ''),
+            is_official: h.is_official !== undefined ? h.is_official : true,
           })) as Holiday[];
         }
       } catch (err) {
@@ -137,6 +150,17 @@ export async function getHolidays(): Promise<Holiday[]> {
     }
     return localStore.getHolidays();
   }, 5000);
+
+  // Background auto-sync if calendar is stale or missing current year
+  if (typeof window !== 'undefined') {
+    import('./indonesian-holidays').then(({ shouldAutoSyncHolidays }) => {
+      if (shouldAutoSyncHolidays(holidays)) {
+        syncOfficialHolidays().catch(e => console.warn('Background holiday auto-sync warning:', e));
+      }
+    }).catch(() => {});
+  }
+
+  return holidays;
 }
 
 export async function getTasks(): Promise<CreativeTask[]> {
@@ -144,7 +168,29 @@ export async function getTasks(): Promise<CreativeTask[]> {
     if (supabase) {
       try {
         const { data, error } = await supabase.from('tasks').select('*');
-        if (!error && data && data.length > 0) return data as CreativeTask[];
+        if (!error && Array.isArray(data)) {
+          return data.map((t: any) => {
+            let taskAttachments: TaskAttachment[] = [];
+            let displayNotes = t.notes || '';
+            if (Array.isArray(t.attachments) && t.attachments.length > 0) {
+              taskAttachments = t.attachments;
+            } else if (t.notes && t.notes.includes('[ATTACHMENTS:')) {
+              const matchAtt = t.notes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+              if (matchAtt) {
+                taskAttachments = safeJsonParse<TaskAttachment[]>(matchAtt[1], []);
+                displayNotes = displayNotes.replace(/\[ATTACHMENTS:\[[\s\S]*?\]\]\n?/g, '').trim();
+              }
+            }
+            if (taskAttachments.length === 0) {
+              taskAttachments = localStore.getTaskAttachments(t.id);
+            }
+            return {
+              ...t,
+              notes: displayNotes,
+              attachments: taskAttachments
+            } as CreativeTask;
+          });
+        }
       } catch (err) {
         console.warn('Supabase getTasks failed, using localStore fallback:', err);
       }
@@ -158,18 +204,38 @@ export async function getMotionTasks(): Promise<MotionTask[]> {
     if (supabase) {
       try {
         const { data, error } = await supabase.from('motion_tasks').select('*');
-        if (!error && data && data.length > 0) {
+        if (!error && Array.isArray(data)) {
           return (data || []).map((m: any) => {
             const rawLink = m.final_video_link || m.link_motion || null;
             const isApprovedOrCompleted = m.status_motion === 'APPROVED' || m.status_motion === 'COMPLETED';
             const resolvedApprovedAt = m.approved_at || (isApprovedOrCompleted ? (m.submission_date ? `${m.submission_date}T00:00:00Z` : m.updated_at || m.created_at) : null);
+            
+            let motionAttachments: TaskAttachment[] = [];
+            let displayNotes = m.notes || '';
+            if (Array.isArray(m.attachments) && m.attachments.length > 0) {
+              motionAttachments = m.attachments;
+            } else if (m.notes && m.notes.includes('[ATTACHMENTS:')) {
+              const matchAtt = m.notes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+              if (matchAtt) {
+                motionAttachments = safeJsonParse<TaskAttachment[]>(matchAtt[1], []);
+                displayNotes = displayNotes.replace(/\[ATTACHMENTS:\[[\s\S]*?\]\]\n?/g, '').trim();
+              }
+            }
+            if (motionAttachments.length === 0) {
+              motionAttachments = localStore.getTaskAttachments(m.id);
+            }
+            if (motionAttachments.length === 0 && m.task_id) {
+              motionAttachments = localStore.getTaskAttachments(m.task_id);
+            }
+
             return {
               ...m,
               approved_at: resolvedApprovedAt,
               link_motion: rawLink ? sanitizeUrl(rawLink) : null,
               final_video_link: m.final_video_link ? sanitizeUrl(m.final_video_link) : null,
               motion_difficulty: m.motion_difficulty || 'LVL_1_SIMPLE',
-              notes: m.notes || '',
+              notes: displayNotes,
+              attachments: motionAttachments,
               apply_date: m.due_date ? m.due_date.substring(0, 10) : null
             };
           }) as MotionTask[];
@@ -263,6 +329,92 @@ export function unpackCommentData(raw: any): TaskComment {
   };
 }
 
+/**
+ * Extracts and unpacks attachments stored in notes via metadata tag [ATTACHMENTS:...],
+ * returning both the parsed TaskAttachment array and cleaned displayNotes.
+ */
+export function extractAttachmentsFromNotes(notes: string | null | undefined): { attachments: TaskAttachment[]; cleanNotes: string } {
+  if (!notes || !notes.includes('[ATTACHMENTS:')) {
+    return { attachments: [], cleanNotes: notes || '' };
+  }
+  const match = notes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+  if (match) {
+    const attachments = safeJsonParse<TaskAttachment[]>(match[1], []);
+    const cleanNotes = notes.replace(/\[ATTACHMENTS:\[[\s\S]*?\]\]\n?/g, '').trim();
+    return { attachments, cleanNotes };
+  }
+  return { attachments: [], cleanNotes: notes || '' };
+}
+
+/**
+ * Packs attachments into notes using the standard [ATTACHMENTS:...] metadata tag.
+ */
+export function packAttachmentsIntoNotes(notes: string | null | undefined, attachments: TaskAttachment[] | undefined): string {
+  let cleanNotes = (notes || '').replace(/\[ATTACHMENTS:\[[\s\S]*?\]\]\n?/g, '').trim();
+  if (attachments && attachments.length > 0) {
+    return `[ATTACHMENTS:${JSON.stringify(attachments)}]\n${cleanNotes}`.trim();
+  }
+  return cleanNotes;
+}
+
+/**
+ * Unpacks revision data ensuring backward and forward compatibility with Supabase schema.
+ * Preserves historical asset links, asset names, submission timestamps, and submitters.
+ */
+export function unpackRevisionData(raw: any): TaskRevision {
+  let notes = raw.notes || raw.revision_notes || '';
+  let meta: any = {};
+
+  if (notes.includes('<!--CMOMS_REVISION_ASSET:')) {
+    const match = notes.match(/^([\s\S]*?)\s*<!--CMOMS_REVISION_ASSET:([\s\S]*?)-->$/);
+    if (match) {
+      notes = match[1];
+      try {
+        meta = JSON.parse(match[2]);
+      } catch {}
+    }
+  } else if (notes.includes('[ASSET_SNAPSHOT:')) {
+    const match = notes.match(/\[ASSET_SNAPSHOT:(\{[\s\S]*?\})\]/);
+    if (match) {
+      try {
+        meta = JSON.parse(match[1]);
+        notes = notes.replace(/\[ASSET_SNAPSHOT:\{[\s\S]*?\}\]\n?/g, '').trim();
+      } catch {}
+    }
+  }
+
+  let reasonCategory = raw.reason_category || meta.reason_category || 'OTHER';
+  if (notes.startsWith('[')) {
+    const reasonMatch = notes.match(/^\[(.*?)\]\s*(.*)$/);
+    if (reasonMatch) {
+      if (!raw.reason_category && !meta.reason_category) reasonCategory = reasonMatch[1];
+      notes = reasonMatch[2];
+    }
+  }
+
+  const assetLink = raw.asset_link || meta.asset_link || null;
+  const assetName = raw.asset_name || meta.asset_name || null;
+  const submittedBy = raw.submitted_by || meta.submitted_by || null;
+  const submittedAt = raw.submitted_at || meta.submitted_at || null;
+
+  const cleanLink = assetLink ? sanitizeUrl(assetLink) : null;
+
+  return {
+    id: raw.id,
+    task_id: raw.task_id,
+    stage: raw.stage || 'DESIGN',
+    revision_number: raw.revision_number || 1,
+    reason_category: reasonCategory,
+    notes,
+    requested_by: raw.requested_by,
+    created_at: raw.created_at,
+    asset_link: cleanLink && cleanLink !== '#' ? cleanLink : null,
+    asset_name: assetName || null,
+    submitted_by: submittedBy || null,
+    submitted_at: submittedAt || null
+  };
+}
+
 export async function getComments(taskId?: string): Promise<TaskComment[]> {
   const cacheKey = taskId ? `comments_${taskId}` : 'comments_all';
   return cachedFetch(cacheKey, async () => {
@@ -338,7 +490,7 @@ export async function getAllTasksWithRelations(): Promise<TaskWithRelations[]> {
 
         const { data, error } = tasksResult;
 
-        if (!error && data && data.length > 0) {
+        if (!error && Array.isArray(data)) {
           const userMap = new Map((usersList || []).map(u => [u.id, u.full_name]));
 
           return data.map((t: any) => {
@@ -370,6 +522,69 @@ export async function getAllTasksWithRelations(): Promise<TaskWithRelations[]> {
               strat_pic_ids = [t.strat_pic_id];
             }
 
+            let taskAttachments: TaskAttachment[] = [];
+            if (Array.isArray(t.attachments) && t.attachments.length > 0) {
+              taskAttachments = t.attachments;
+            } else if (t.notes && t.notes.includes('[ATTACHMENTS:')) {
+              const matchAtt = t.notes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+              if (matchAtt) {
+                taskAttachments = safeJsonParse<TaskAttachment[]>(matchAtt[1], []);
+                displayNotes = displayNotes.replace(/\[ATTACHMENTS:\[[\s\S]*?\]\]\n?/g, '').trim();
+              }
+            }
+            if (taskAttachments.length === 0) {
+              taskAttachments = localStore.getTaskAttachments(t.id);
+            }
+
+            // Extract source strategic task ID from column or notes
+            let resolvedSourceStrategicTaskId = t.source_strategic_task_id || null;
+            if (!resolvedSourceStrategicTaskId && t.notes) {
+              const matchSourceId = t.notes.match(/\[SOURCE_STRATEGIC_TASK_ID:([^\]]+)\]/);
+              if (matchSourceId) {
+                resolvedSourceStrategicTaskId = matchSourceId[1].trim();
+              } else {
+                const matchStratCode = t.notes.match(/\[Berasal dari Konsep Strategic\s+([^\]]+)\]/);
+                if (matchStratCode) {
+                  const parentTask = data.find((pt: any) => pt.task_code === matchStratCode[1].trim());
+                  if (parentTask) {
+                    resolvedSourceStrategicTaskId = parentTask.id;
+                  }
+                }
+              }
+            }
+
+            // Inherit concept deck from parent strategic task if this is a spawned design task
+            let resolvedParentStratTask: any = null;
+            if (resolvedSourceStrategicTaskId) {
+              resolvedParentStratTask = data.find((pt: any) => pt.id === resolvedSourceStrategicTaskId) || null;
+            }
+
+            if (!strat_concept_link && resolvedParentStratTask) {
+              if (resolvedParentStratTask.notes && resolvedParentStratTask.notes.includes('[STRAT_CONCEPT:')) {
+                const matchParentConcept = resolvedParentStratTask.notes.match(/\[STRAT_CONCEPT:(\{[\s\S]*?\})\]/);
+                if (matchParentConcept) {
+                  const parsedParent = safeJsonParse<{ name?: string; link?: string; submitted_at?: string }>(matchParentConcept[1], {});
+                  strat_concept_name = parsedParent.name || null;
+                  strat_concept_link = parsedParent.link ? sanitizeUrl(parsedParent.link) : null;
+                  strat_submitted_at = parsedParent.submitted_at || null;
+                }
+              }
+              if (!strat_concept_link && resolvedParentStratTask.strat_concept_link) {
+                strat_concept_link = sanitizeUrl(resolvedParentStratTask.strat_concept_link);
+                strat_concept_name = resolvedParentStratTask.strat_concept_name || strat_concept_name;
+                strat_submitted_at = resolvedParentStratTask.strat_submitted_at || strat_submitted_at;
+              }
+            }
+
+            // Also check notes for Link Konsep Strategic if not yet populated
+            if (!strat_concept_link && t.notes) {
+              const linkMatch = t.notes.match(/Link Konsep Strategic:\s*(https?:\/\/[^\s\n\r]+)/i);
+              if (linkMatch && linkMatch[1] && linkMatch[1] !== '-') {
+                strat_concept_link = sanitizeUrl(linkMatch[1]);
+                if (!strat_concept_name) strat_concept_name = 'Strategic Concept Deck';
+              }
+            }
+
             const strat_pic_names = strat_pic_ids.map(id => userMap.get(id) || '').filter(Boolean);
             const strat_pic_name = strat_pic_names.length > 0
               ? strat_pic_names.join(', ')
@@ -378,27 +593,66 @@ export async function getAllTasksWithRelations(): Promise<TaskWithRelations[]> {
             const isApprovedOrClosed = t.status_design === 'DESIGN_APPROVED' || t.status_design === 'TASK_CLOSED';
             const resolvedApprovedAt = t.approved_at || (isApprovedOrClosed ? (t.submission_date ? `${t.submission_date}T00:00:00Z` : t.updated_at || t.created_at) : null);
 
+            const isMockup = t.is_mockup !== undefined ? t.is_mockup : isMockupTask({ ...t, content_type_name: t.content_type?.name });
+            const pipelineType = t.pipeline_type || determineTaskPipeline({ ...t, content_type_name: t.content_type?.name });
+            const activePipeline = determineTaskPipeline({ ...t, content_type_name: t.content_type?.name });
+
+            const spawnedTask = data.find((st: any) => {
+              if (st.source_strategic_task_id === t.id) return true;
+              if (st.notes && (
+                st.notes.includes(`[SOURCE_STRATEGIC_TASK_ID:${t.id}]`) ||
+                st.notes.includes(`[Berasal dari Konsep Strategic ${t.task_code}]`)
+              )) return true;
+              return false;
+            });
+
+            let resolvedSpawnedDesignTaskId = t.spawned_design_task_id || spawnedTask?.id || null;
+            if (!resolvedSpawnedDesignTaskId && t.notes) {
+              const matchSpawnedId = t.notes.match(/\[SPAWNED_DESIGN_TASK_ID:([^\]]+)\]/);
+              if (matchSpawnedId) {
+                resolvedSpawnedDesignTaskId = matchSpawnedId[1].trim();
+              }
+            }
+
+            const resolvedFinalAssetLink = t.final_asset_link 
+              ? sanitizeUrl(t.final_asset_link) 
+              : (pipelineType === 'STRATEGIC' && spawnedTask?.final_asset_link ? sanitizeUrl(spawnedTask.final_asset_link) : null);
+            const resolvedFinalAssetName = t.final_asset_name || (pipelineType === 'STRATEGIC' ? spawnedTask?.final_asset_name || null : null);
+
+            displayNotes = displayNotes
+              .replace(/\[SOURCE_STRATEGIC_TASK_ID:[^\]]+\]\n?/g, '')
+              .replace(/\[SPAWNED_DESIGN_TASK_ID:[^\]]+\]\n?/g, '')
+              .replace(/\[SPAWNED_DESIGN_TASK_CODE:[^\]]+\]\n?/g, '')
+              .trim();
+
             return {
               ...t,
               approved_at: resolvedApprovedAt,
-              final_asset_link: t.final_asset_link ? sanitizeUrl(t.final_asset_link) : null,
+              source_strategic_task_id: resolvedSourceStrategicTaskId,
+              spawned_design_task_id: resolvedSpawnedDesignTaskId,
+              final_asset_link: resolvedFinalAssetLink,
+              final_asset_name: resolvedFinalAssetName,
               notes: displayNotes,
+              attachments: taskAttachments,
               strat_concept_name,
               strat_concept_link,
               strat_submitted_at,
-              client_name: t.client?.name || 'Unknown',
-              client_type: t.client?.client_type || 'EXTERNAL',
-              content_type_name: t.content_type?.name || 'Unknown',
-              design_pic_name: t.design_pic?.full_name || null,
-              strat_pic_id: t.strat_pic_id || (strat_pic_ids[0] || null),
-              strat_pic_ids,
-              strat_pic_name,
-              strat_pic_names,
-              created_by_name: t.created_by_user?.full_name || 'Unknown',
-              motion_task: t.motion_tasks && t.motion_tasks.length > 0 ? t.motion_tasks[0] : null,
-              motion_pic_name: (t.motion_tasks && t.motion_tasks.length > 0) ? t.motion_tasks[0].motion_pic?.full_name : null,
-              revisions: t.task_revisions || []
-            } as TaskWithRelations;
+                client_name: t.client?.name || 'Unknown',
+                client_type: t.client?.client_type || 'EXTERNAL',
+                content_type_name: t.content_type?.name || 'Unknown',
+                design_pic_name: t.design_pic?.full_name || null,
+                strat_pic_id: t.strat_pic_id || (strat_pic_ids[0] || null),
+                strat_pic_ids,
+                strat_pic_name,
+                strat_pic_names,
+                created_by_name: t.created_by_user?.full_name || 'Unknown',
+                motion_task: t.motion_tasks && t.motion_tasks.length > 0 ? t.motion_tasks[0] : null,
+                motion_pic_name: (t.motion_tasks && t.motion_tasks.length > 0) ? t.motion_tasks[0].motion_pic?.full_name : null,
+                revisions: (t.task_revisions || []).map(unpackRevisionData),
+                is_mockup: isMockup,
+                pipeline_type: pipelineType,
+                active_pipeline: activePipeline
+              } as TaskWithRelations;
           });
         }
       } catch (err) {
@@ -410,18 +664,136 @@ export async function getAllTasksWithRelations(): Promise<TaskWithRelations[]> {
   }, 2000);
 }
 
+// --- UNIQUE TASK CODE GENERATOR & SAFE INSERTION ---
+
+/**
+ * Helper to safely generate the next unique task code (REQ-YYYY-XXXX).
+ * Calculates the maximum sequence number among all existing tasks for the current year,
+ * ensuring no collisions even when tasks were deleted, archived, or created out-of-order.
+ */
+export async function getNextTaskCode(): Promise<string> {
+  const currentYear = getCurrentYear();
+  const prefix = `REQ-${currentYear}-`;
+  let maxSeq = 0;
+
+  if (supabase) {
+    try {
+      const { data } = await supabase
+        .from('tasks')
+        .select('task_code')
+        .ilike('task_code', `${prefix}%`)
+        .order('task_code', { ascending: false })
+        .limit(50);
+
+      if (data && data.length > 0) {
+        for (const row of data) {
+          if (row.task_code && row.task_code.startsWith(prefix)) {
+            const num = parseInt(row.task_code.slice(prefix.length), 10);
+            if (!isNaN(num) && num > maxSeq) {
+              maxSeq = num;
+            }
+          }
+        }
+      }
+
+      const { count } = await supabase.from('tasks').select('*', { count: 'exact', head: true });
+      if (count && count > maxSeq) {
+        maxSeq = count;
+      }
+    } catch (err) {
+      console.warn('Error querying max task_code in Supabase:', err);
+    }
+  }
+
+  // Also verify against localStore tasks
+  try {
+    const localTasks = localStore.getTasks();
+    for (const t of localTasks) {
+      if (t.task_code && t.task_code.startsWith(prefix)) {
+        const num = parseInt(t.task_code.slice(prefix.length), 10);
+        if (!isNaN(num) && num > maxSeq) {
+          maxSeq = num;
+        }
+      }
+    }
+  } catch {}
+
+  return generateTaskCode(currentYear, maxSeq + 1);
+}
+
+/**
+ * Inserts a task into Supabase while guaranteeing uniqueness of task_code.
+ * If a unique constraint violation occurs (code 23505 or duplicate key),
+ * it dynamically increments the task_code sequence and retries up to 10 times.
+ */
+async function insertTaskWithUniqueCode(initialTask: any): Promise<any> {
+  if (!supabase) return initialTask;
+
+  let currentTask = { ...initialTask };
+  const currentYear = getCurrentYear();
+  const prefix = `REQ-${currentYear}-`;
+
+  if (!currentTask.task_code) {
+    currentTask.task_code = await getNextTaskCode();
+  }
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    let insertErr: any = null;
+    let insertedData: any = null;
+
+    try {
+      const { data, error } = await supabase.from('tasks').insert([currentTask]).select().single();
+      insertErr = error;
+      insertedData = data;
+    } catch (err: any) {
+      insertErr = err;
+    }
+
+    if (insertErr && (insertErr.code === 'PGRST204' || insertErr.message?.includes('column'))) {
+      const { pipeline_type, is_mockup, attachments, source_strategic_task_id, ...safeTask } = currentTask;
+      const { data: fbData, error: fbErr } = await supabase.from('tasks').insert([safeTask]).select().single();
+      insertErr = fbErr;
+      insertedData = fbData;
+    }
+
+    if (!insertErr) {
+      return insertedData || currentTask;
+    }
+
+    const isDuplicateKey =
+      insertErr.code === '23505' ||
+      insertErr.message?.includes('duplicate key') ||
+      insertErr.message?.includes('tasks_task_code_key') ||
+      insertErr.details?.includes('tasks_task_code_key');
+
+    if (isDuplicateKey) {
+      console.warn(`Duplicate task_code detected (${currentTask.task_code}), retrying with next sequence...`);
+      let currentSeq = 0;
+      if (currentTask.task_code && currentTask.task_code.startsWith(prefix)) {
+        currentSeq = parseInt(currentTask.task_code.slice(prefix.length), 10) || 0;
+      }
+      currentSeq++;
+      currentTask.task_code = generateTaskCode(currentYear, currentSeq);
+      continue;
+    }
+
+    console.error('Supabase task insert error:', insertErr);
+    throw new Error(insertErr.message || insertErr.details || 'Gagal menyimpan task ke Supabase');
+  }
+
+  throw new Error('Gagal mendapatkan task_code unik setelah beberapa percobaan.');
+}
+
 // --- MUTATORS (ASYNC) ---
 
 export async function createTask(input: CreateTaskInput, createdBy: string): Promise<CreativeTask | null> {
-  if (!supabase) {
-    invalidateStoreCache('tasks');
-    return localStore.createTask(input, createdBy);
+  // Validate Campaign Name: must be one of BAU, DD, PAYDAY, SPECIAL CAMPAIGN
+  const rawCampaign = (input.campaign_name || '').trim();
+  const normalizedCampaign = normalizeCampaignName(rawCampaign);
+  if (!isValidCampaignName(normalizedCampaign)) {
+    throw new Error(`Campaign Name tidak valid (${rawCampaign}). Pilihan yang tersedia: BAU, DD, PAYDAY, SPECIAL CAMPAIGN.`);
   }
-  
-  // Create task Code
-  const { count } = await supabase.from('tasks').select('*', { count: 'exact', head: true });
-  const seq = (count || 0) + 1;
-  const taskCode = generateTaskCode(getCurrentYear(), seq);
+  const validCampaignName = normalizedCampaign;
 
   let rawStratPicIds: string[] = [];
   if (input.strat_pic_ids && Array.isArray(input.strat_pic_ids)) {
@@ -430,43 +802,159 @@ export async function createTask(input: CreateTaskInput, createdBy: string): Pro
     rawStratPicIds = [input.strat_pic_id.trim()];
   }
 
-  const stratPicId = (input.requires_strategic_concept && rawStratPicIds.length > 0) 
+  const contentTypes = await getContentTypes();
+  const ct = contentTypes.find(c => c.id === input.content_type_id);
+  const isMockup = input.is_mockup !== undefined ? input.is_mockup : isMockupTask({
+    content_type_id: input.content_type_id,
+    content_type_name: ct?.name,
+    campaign_name: validCampaignName
+  });
+
+  let pipelineType: PipelineType = input.pipeline_type || (
+    input.requires_strategic_concept
+      ? 'STRATEGIC'
+      : isMockup
+        ? 'GD_MOCKUP'
+        : 'GD_NON_MOCKUP'
+  );
+
+  let requiresStrategic = Boolean(input.requires_strategic_concept);
+
+  if (pipelineType === 'STRATEGIC' || requiresStrategic) {
+    pipelineType = 'STRATEGIC';
+    requiresStrategic = true;
+    if (rawStratPicIds.length === 0) {
+      throw new Error('Strategic PIC wajib dipilih untuk task pada pipeline Strategic.');
+    }
+  } else if (pipelineType === 'GD_MOCKUP') {
+    requiresStrategic = false;
+    rawStratPicIds = [];
+    if (!isMockup) {
+      throw new Error('Content Type untuk pipeline GD Mockup hanya boleh Mockup.');
+    }
+    input.task_source = 'ORCA';
+  } else if (pipelineType === 'GD_NON_MOCKUP') {
+    requiresStrategic = false;
+    rawStratPicIds = [];
+    if (isMockup) {
+      throw new Error('Task berbasis Mockup tidak diizinkan pada pipeline GD Non-Mockup. Silakan gunakan pipeline GD Mockup.');
+    }
+    input.task_source = 'ECOMMERCE';
+  }
+
+  if (!supabase) {
+    invalidateStoreCache('tasks');
+    return localStore.createTask({
+      ...input,
+      campaign_name: validCampaignName,
+      pipeline_type: pipelineType,
+      requires_strategic_concept: requiresStrategic,
+      strat_pic_ids: requiresStrategic ? rawStratPicIds : [],
+      strat_pic_id: (requiresStrategic && rawStratPicIds.length > 0) ? rawStratPicIds[0] : undefined
+    }, createdBy);
+  }
+  
+  // Generate safe unique task code
+  const taskCode = await getNextTaskCode();
+
+  const stratPicId = (requiresStrategic && rawStratPicIds.length > 0) 
     ? rawStratPicIds[0] 
     : null;
 
   let finalNotes = input.notes || '';
-  if (input.requires_strategic_concept && rawStratPicIds.length > 0) {
+  if (requiresStrategic && rawStratPicIds.length > 0) {
     finalNotes = `[STRAT_PICS:${JSON.stringify(rawStratPicIds)}]\n${finalNotes}`.trim();
   }
+  if (input.attachments && input.attachments.length > 0) {
+    finalNotes = `[ATTACHMENTS:${JSON.stringify(input.attachments)}]\n${finalNotes}`.trim();
+  }
 
-  const newTask = {
+  const newTask: any = {
     task_code: taskCode,
     client_id: input.client_id,
-    campaign_name: input.campaign_name,
+    campaign_name: validCampaignName,
     content_type_id: input.content_type_id,
-    task_source: input.task_source,
+    task_source: pipelineType === 'GD_MOCKUP' ? 'ORCA' : (pipelineType === 'GD_NON_MOCKUP' ? 'ECOMMERCE' : input.task_source),
     platform: input.platform,
     req_qty: input.req_qty,
     output_qty: input.req_qty,
     req_date: input.req_date,
     due_date: input.due_date,
-    requires_strategic_concept: Boolean(input.requires_strategic_concept),
+    requires_strategic_concept: requiresStrategic,
     strat_pic_id: stratPicId,
-    status_strat: input.requires_strategic_concept ? 'PENDING' : 'NOT_REQUIRED',
-    status_design: input.requires_strategic_concept ? 'STRAT_PENDING' : 'DESIGN_UNASSIGNED',
+    status_strat: requiresStrategic ? 'PENDING' : 'NOT_REQUIRED',
+    status_design: requiresStrategic ? 'STRAT_PENDING' : 'DESIGN_UNASSIGNED',
+    design_pic_id: input.design_pic_id || null,
+    pipeline_type: pipelineType,
+    is_mockup: isMockup,
     notes: finalNotes,
     created_by: createdBy
   };
-
-  const { data, error } = await supabase.from('tasks').insert([newTask]).select().single();
-  if (error) {
-    console.error('Supabase createTask error:', error);
-    throw new Error(error.message || error.details || 'Gagal membuat task');
+  if (input.attachments && input.attachments.length > 0) {
+    newTask.attachments = input.attachments;
   }
+
+  const dataResult = await insertTaskWithUniqueCode(newTask);
   
   invalidateStoreCache('tasks');
-  await addAuditLog('tasks', data.id, 'CREATE', createdBy, null, data);
-  return data as CreativeTask;
+  await addAuditLog('tasks', dataResult.id, 'CREATE', createdBy, null, dataResult);
+
+  // Notify GD PIC if assigned upon creation
+  if (input.design_pic_id && input.design_pic_id !== createdBy) {
+    await sendNotificationsSafe(
+      [input.design_pic_id],
+      'Penugasan Desain Baru',
+      `Anda ditugaskan mengerjakan request ${dataResult.task_code || taskCode} (${validCampaignName}).`,
+      'info',
+      `/dashboard/tasks?taskId=${dataResult.id}&tab=details`,
+      dataResult.id,
+      createdBy
+    );
+  }
+
+  try {
+    localStore.createTask({
+      ...input,
+      id: dataResult.id,
+      campaign_name: validCampaignName,
+      pipeline_type: pipelineType,
+      requires_strategic_concept: requiresStrategic,
+      strat_pic_ids: requiresStrategic ? rawStratPicIds : [],
+      strat_pic_id: stratPicId || undefined,
+      design_pic_id: input.design_pic_id || null,
+      is_mockup: isMockup,
+      attachments: input.attachments || []
+    } as any, createdBy);
+  } catch {
+    // Non-fatal fallback
+  }
+
+  // Real-Time Google Sheets Sync (Transactional Outbox)
+  try {
+    const clients = await getClients();
+    const contentTypes = await getContentTypes();
+    const client = clients.find(c => c.id === input.client_id);
+    const contentType = contentTypes.find(c => c.id === input.content_type_id);
+
+    const { targetTab, payload } = buildTaskSyncPayload(
+      dataResult as CreativeTask,
+      client?.name,
+      contentType?.name
+    );
+
+    void enqueueGoogleSheetsSync({
+      idempotencyKey: `CREATE_TASK_${dataResult.task_code || taskCode}`,
+      eventType: 'CREATE_TASK',
+      entityId: dataResult.id,
+      taskCode: dataResult.task_code || taskCode,
+      targetTab,
+      payload,
+    });
+  } catch (syncErr) {
+    console.warn('Failed to enqueue Google Sheets sync on createTask:', syncErr);
+  }
+
+  return dataResult as CreativeTask;
 }
 
 export async function addAuditLog(
@@ -1226,46 +1714,456 @@ export async function assignTask(taskId: string, input: AssignTaskInput, perform
   }
 }
 
-export async function updateStratStatus(taskId: string, newStatus: StratStatus, userId: string): Promise<void> {
+export async function updateStratStatus(
+  taskId: string,
+  newStatus: StratStatus,
+  userId: string,
+  roleName?: string
+): Promise<{ success: boolean; task?: any; spawnedTask?: any }> {
   if (!supabase) {
-    localStore.updateStratStatus(taskId, newStatus, userId);
-    return;
+    const res = localStore.updateStratStatus(taskId, newStatus, userId);
+    return res;
   }
   const { data: currentTask } = await supabase.from('tasks').select('*').eq('id', taskId).single();
+  if (!currentTask) return { success: false };
+
+  const { data: user } = await supabase.from('users').select('id, full_name, role_id, role_name').eq('id', userId).maybeSingle();
+  const localUser = localStore.getUserById(userId);
+  const effectiveRole = roleName || user?.role_name || localUser?.role_name;
+  const effectiveName = user?.full_name || localUser?.full_name || 'User';
+
+  // Authorization checks
+  if (newStatus === 'IN_PROGRESS') {
+    const rawNotes = currentTask.notes || '';
+    let stratPicIds: string[] = [];
+    if (rawNotes.includes('[STRAT_PICS:')) {
+      const match = rawNotes.match(/\[STRAT_PICS:(\[[\s\S]*?\])\]/);
+      if (match) {
+        try { stratPicIds = JSON.parse(match[1]); } catch {}
+      }
+    }
+    const isAssigned = currentTask.strat_pic_id === userId || stratPicIds.includes(userId);
+    const isAuthorized = effectiveRole && (['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(effectiveRole) || isAssigned);
+    if (!isAuthorized) {
+      throw new Error('Hanya Strategic PIC yang ditugaskan, Lead/Admin, atau AE yang dapat memulai pengerjaan strategi.');
+    }
+  } else if (newStatus === 'APPROVED') {
+    const rawNotes = currentTask.notes || '';
+    let stratPicIds: string[] = [];
+    if (rawNotes.includes('[STRAT_PICS:')) {
+      const match = rawNotes.match(/\[STRAT_PICS:(\[[\s\S]*?\])\]/);
+      if (match) {
+        try { stratPicIds = JSON.parse(match[1]); } catch {}
+      }
+    }
+    const isAssigned = currentTask.strat_pic_id === userId || stratPicIds.includes(userId);
+    const isAuthorized = effectiveRole && (['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(effectiveRole) || (effectiveRole === 'REQUESTER' && currentTask.created_by === userId) || (effectiveRole === 'STRATEGIC_PIC' && isAssigned));
+    if (!isAuthorized) {
+      throw new Error(`User ${userId} tidak memiliki izin untuk menyetujui strategic concept.`);
+    }
+    // Idempotency: already approved
+    if (currentTask.status_strat === 'APPROVED') return { success: true, task: currentTask };
+  }
+
   const updates: any = {
     status_strat: newStatus,
+    requires_strategic_concept: true,
     updated_at: new Date().toISOString()
   };
+
   if (newStatus === 'APPROVED') {
-    if (currentTask?.design_pic_id) {
-      updates.status_design = 'DESIGN_ASSIGNED';
-    } else {
-      updates.status_design = 'DESIGN_UNASSIGNED';
-    }
+    updates.status_design = 'DESIGN_APPROVED';
+    updates.approved_at = currentTask.approved_at || new Date().toISOString();
   }
-  const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
-  if (error) throw error;
+
+  let updateErr: any = null;
+  try {
+    const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
+    updateErr = error;
+  } catch (err: any) {
+    updateErr = err;
+  }
+  if (updateErr && (updateErr.code === 'PGRST204' || updateErr.message?.includes('column') || updateErr.details?.includes('column'))) {
+    const { is_mockup, pipeline_type, approved_at, spawned_design_task_id, ...safeUpdates } = updates;
+    const { error: fbErr } = await supabase.from('tasks').update(safeUpdates).eq('id', taskId);
+    if (fbErr) {
+      console.error('Supabase updateStratStatus fallback error:', fbErr);
+      throw new Error(fbErr.message || fbErr.details || 'Gagal update status strategic');
+    }
+  } else if (updateErr) {
+    console.error('Supabase updateStratStatus error:', updateErr);
+    throw new Error(updateErr.message || updateErr.details || 'Gagal update status strategic');
+  }
   invalidateStoreCache('tasks');
-  await addAuditLog('creative_tasks', taskId, 'STATUS_TRANSITION', userId, null, updates);
+  try {
+    await addAuditLog('creative_tasks', taskId, newStatus === 'APPROVED' ? 'APPROVE' : 'STATUS_TRANSITION', userId, null, {
+      ...updates,
+      pipeline_type: 'STRATEGIC',
+    });
+  } catch (auditErr) {
+    console.warn('Audit log write error:', auditErr);
+  }
+
+  try {
+    localStore.updateStratStatus(taskId, newStatus, userId);
+    if (newStatus === 'APPROVED' && supabase) {
+      const spawned = localStore.getTasks().find(t => t.source_strategic_task_id === taskId);
+      if (spawned) {
+        try {
+          const spawnedAttachments = (spawned.attachments && spawned.attachments.length > 0)
+            ? spawned.attachments
+            : ((currentTask?.attachments) || []);
+          const rawNotes = spawned.notes || '';
+          const stratConceptTag = (spawned.strat_concept_link || currentTask?.strat_concept_link)
+            ? `[STRAT_CONCEPT:${JSON.stringify({ name: spawned.strat_concept_name || currentTask?.strat_concept_name || 'Strategic Concept Deck', link: spawned.strat_concept_link || currentTask?.strat_concept_link || '', submitted_at: spawned.strat_submitted_at || currentTask?.strat_submitted_at || '' })}]\n`
+            : '';
+          const notesWithConcept = (rawNotes.includes('[STRAT_CONCEPT:') || !stratConceptTag)
+            ? rawNotes
+            : `${stratConceptTag}${rawNotes}`.trim();
+
+          const finalSpawnedNotes = (spawnedAttachments.length > 0 && !notesWithConcept.includes('[ATTACHMENTS:'))
+            ? packAttachmentsIntoNotes(notesWithConcept, spawnedAttachments)
+            : notesWithConcept;
+
+          await supabase.from('tasks').upsert([{
+            id: spawned.id,
+            task_code: spawned.task_code,
+            client_id: spawned.client_id,
+            campaign_name: spawned.campaign_name,
+            content_type_id: spawned.content_type_id,
+            task_source: spawned.task_source,
+            platform: spawned.platform,
+            req_qty: spawned.req_qty,
+            output_qty: spawned.output_qty,
+            req_date: spawned.req_date,
+            due_date: spawned.due_date,
+            requires_strategic_concept: false,
+            status_strat: 'NOT_REQUIRED',
+            status_design: 'DESIGN_UNASSIGNED',
+            motion_readiness: spawned.motion_readiness,
+            pipeline_type: spawned.pipeline_type,
+            is_mockup: spawned.is_mockup,
+            notes: finalSpawnedNotes,
+            source_strategic_task_id: spawned.source_strategic_task_id || taskId,
+            created_by: spawned.created_by,
+            created_at: spawned.created_at,
+            updated_at: spawned.updated_at
+          }]);
+          await supabase.from('tasks').update({ spawned_design_task_id: spawned.id }).eq('id', taskId);
+        } catch (spErr) {
+          console.warn('Could not persist spawned design task to Supabase:', spErr);
+        }
+      }
+    }
+  } catch (localErr) {
+    // Non-fatal fallback
+  }
 
   const taskCode = currentTask?.task_code || taskId;
-  if (newStatus === 'APPROVED') {
+  const campaignName = currentTask?.campaign_name || 'Request';
+  const actorName = effectiveName;
+
+  if (newStatus === 'IN_PROGRESS') {
+    if (currentTask.created_by && currentTask.created_by !== userId) {
+      await sendNotificationsSafe(
+        [currentTask.created_by],
+        'Pengerjaan Strategic Dimulai',
+        `Strategic PIC (${actorName}) telah memulai perumusan konsep strategi untuk ${taskCode} (${campaignName}).`,
+        'info',
+        `/dashboard/tasks?taskId=${taskId}&tab=details&pipeline=STRATEGIC`,
+        taskId,
+        userId
+      );
+    }
+  } else if (newStatus === 'APPROVED') {
     const recipients = new Set<string>();
     if (currentTask?.strat_pic_id) recipients.add(currentTask.strat_pic_id);
     if (currentTask?.created_by) recipients.add(currentTask.created_by);
     if (currentTask?.design_pic_id) recipients.add(currentTask.design_pic_id);
+
+    // Also notify leads
+    const { data: leadUsers } = await supabase.from('users').select('id').in('role_name', ['TEAM_LEAD', 'ADMIN']);
+    if (leadUsers) leadUsers.forEach((u: any) => recipients.add(u.id));
     recipients.delete(userId);
 
     await sendNotificationsSafe(
       Array.from(recipients),
-      'Strategic Concept Disetujui',
-      `Strategic Concept pada request ${taskCode} telah disetujui.`,
+      'Strategic Concept Disetujui (Selesai)',
+      `Konsep strategi ${taskCode} (${campaignName}) telah disetujui dalam pipeline Strategic.`,
       'success',
-      `/dashboard/tasks?taskId=${taskId}&tab=details`,
+      `/dashboard/tasks?taskId=${taskId}&tab=details&pipeline=STRATEGIC`,
       taskId,
       userId
     );
   }
+
+  const finalSpawned = localStore.getTasks().find(t => t.source_strategic_task_id === taskId || t.id === currentTask?.spawned_design_task_id);
+  return { success: true, task: currentTask, spawnedTask: finalSpawned };
+}
+
+export async function handoverStrategicTaskToGD(
+  taskId: string,
+  input: HandoverStrategicToGDInput,
+  userId: string
+): Promise<{ success: boolean; strategicTask?: any; spawnedTask?: any }> {
+  // If no Supabase connection, delegate completely to localStore
+  if (!supabase) {
+    const localRes = localStore.handoverStrategicTaskToGD(taskId, input, userId);
+    invalidateStoreCache('tasks');
+    invalidateStoreCache('tasks_with_relations');
+    return localRes;
+  }
+
+  // 1. Fetch current strategic task from Supabase
+  let { data: stratTask, error: fetchErr } = await supabase
+    .from('tasks')
+    .select('*')
+    .eq('id', taskId)
+    .maybeSingle();
+
+  // If not found by ID, attempt lookup by task_code
+  if (!stratTask && taskId) {
+    const { data: stratByCode } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('task_code', taskId)
+      .maybeSingle();
+    if (stratByCode) {
+      stratTask = stratByCode;
+      taskId = stratTask.id;
+    }
+  }
+
+  // If not in Supabase, try localStore as fallback
+  if (!stratTask) {
+    try {
+      const localRes = localStore.handoverStrategicTaskToGD(taskId, input, userId);
+      invalidateStoreCache('tasks');
+      invalidateStoreCache('tasks_with_relations');
+      return localRes;
+    } catch {
+      throw new Error('Task strategic tidak ditemukan');
+    }
+  }
+
+  // 2. Authorization check
+  const { data: user } = await supabase.from('users').select('id, full_name, role_name').eq('id', userId).maybeSingle();
+  const localUser = localStore.getUserById(userId);
+  const effectiveRole = user?.role_name || localUser?.role_name;
+
+  if (effectiveRole && !['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(effectiveRole)) {
+    const rawNotes = stratTask.notes || '';
+    let stratPicIds: string[] = [];
+    if (rawNotes.includes('[STRAT_PICS:')) {
+      const match = rawNotes.match(/\[STRAT_PICS:(\[[\s\S]*?\])\]/);
+      if (match) {
+        try { stratPicIds = JSON.parse(match[1]); } catch {}
+      }
+    }
+    const isAssigned = stratTask.strat_pic_id === userId || stratPicIds.includes(userId);
+    if (!isAssigned) {
+      throw new Error('Anda tidak memiliki izin untuk mengalihkan task ke Graphic Design.');
+    }
+  }
+
+  // 3. Target Pipeline and Mockup flag
+  const targetPipeline: PipelineType = input.target_pipeline || (stratTask.task_source === 'ECOMMERCE' ? 'GD_NON_MOCKUP' : 'GD_MOCKUP');
+  const isMockup = targetPipeline === 'GD_MOCKUP';
+
+  // 4. Check if spawned task already exists
+  let spawnedTask: any = null;
+  if (stratTask.spawned_design_task_id) {
+    const { data: existingSpawned } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('id', stratTask.spawned_design_task_id)
+      .maybeSingle();
+
+    if (existingSpawned) {
+      spawnedTask = existingSpawned;
+      const spawnedUpdates: any = {
+        design_pic_id: input.design_pic_id || null,
+        status_design: input.design_pic_id ? 'DESIGN_ASSIGNED' : 'DESIGN_UNASSIGNED',
+        pipeline_type: targetPipeline,
+        is_mockup: isMockup,
+        task_source: isMockup ? 'ORCA' : 'ECOMMERCE',
+        updated_at: new Date().toISOString()
+      };
+      if (input.design_difficulty) spawnedUpdates.design_difficulty = input.design_difficulty;
+      if (input.due_date) spawnedUpdates.due_date = input.due_date;
+      if (input.handover_notes) {
+        spawnedUpdates.notes = `${spawnedTask.notes || ''}\n[Catatan Handover]: ${input.handover_notes}`.trim();
+      }
+
+      await supabase.from('tasks').update(spawnedUpdates).eq('id', spawnedTask.id);
+      spawnedTask = { ...spawnedTask, ...spawnedUpdates };
+    }
+  }
+
+  // 5. If not spawned yet, create new GD task in Supabase
+  if (!spawnedTask) {
+    let targetContentTypeId = stratTask.content_type_id;
+    if (isMockup) {
+      if (targetContentTypeId !== 1 && !isMockupTask(stratTask)) {
+        targetContentTypeId = 1; // 'Mockup Set'
+      }
+    } else {
+      if (targetContentTypeId === 1) {
+        targetContentTypeId = 2; // 'Banner Marketplace'
+      }
+    }
+
+    const spawnedTaskCode = await getNextTaskCode();
+
+    const unpackedStrat = extractAttachmentsFromNotes(stratTask.notes || '');
+    const stratAttachments = Array.isArray(stratTask.attachments) && stratTask.attachments.length > 0
+      ? stratTask.attachments
+      : (unpackedStrat.attachments.length > 0
+        ? unpackedStrat.attachments
+        : localStore.getTaskAttachments(stratTask.id));
+
+    const stratConceptTag = (stratTask.strat_concept_link || stratTask.final_asset_link)
+      ? `[STRAT_CONCEPT:${JSON.stringify({ name: stratTask.strat_concept_name || 'Strategic Concept Deck', link: stratTask.strat_concept_link || stratTask.final_asset_link || '', submitted_at: stratTask.strat_submitted_at || '' })}]\n`
+      : '';
+
+    const sourceStratTag = `[SOURCE_STRATEGIC_TASK_ID:${stratTask.id}]\n`;
+
+    const baseNotes = (stratAttachments && stratAttachments.length > 0)
+      ? `[ATTACHMENTS:${JSON.stringify(stratAttachments)}]\n${stratConceptTag}${sourceStratTag}[Berasal dari Konsep Strategic ${stratTask.task_code}]\nLink Konsep Strategic: ${stratTask.strat_concept_link || stratTask.final_asset_link || '-'}\n\n${unpackedStrat.cleanNotes}`.trim()
+      : `${stratConceptTag}${sourceStratTag}[Berasal dari Konsep Strategic ${stratTask.task_code}]\nLink Konsep Strategic: ${stratTask.strat_concept_link || stratTask.final_asset_link || '-'}\n\n${unpackedStrat.cleanNotes}`.trim();
+
+    const finalNotes = input.handover_notes
+      ? `${baseNotes}\n[Catatan Handover]: ${input.handover_notes}`.trim()
+      : baseNotes;
+
+    const newSpawnedId = generateUUID();
+    const newSpawnedTask: any = {
+      id: newSpawnedId,
+      task_code: spawnedTaskCode,
+      client_id: stratTask.client_id,
+      campaign_name: stratTask.campaign_name,
+      content_type_id: targetContentTypeId,
+      task_source: isMockup ? 'ORCA' : 'ECOMMERCE',
+      platform: stratTask.platform,
+      req_qty: stratTask.req_qty || 1,
+      output_qty: stratTask.output_qty || stratTask.req_qty || 1,
+      req_date: new Date().toISOString().slice(0, 10),
+      due_date: input.due_date || stratTask.due_date || new Date().toISOString().slice(0, 10),
+      requires_strategic_concept: false,
+      status_strat: 'NOT_REQUIRED',
+      status_design: input.design_pic_id ? 'DESIGN_ASSIGNED' : 'DESIGN_UNASSIGNED',
+      design_pic_id: input.design_pic_id || null,
+      design_difficulty: input.design_difficulty || 'MEDIUM',
+      motion_readiness: isMockup ? 'WAITING_ASSET_GD' : 'NOT_APPLICABLE',
+      pipeline_type: targetPipeline,
+      is_mockup: isMockup,
+      notes: finalNotes,
+      source_strategic_task_id: stratTask.id,
+      created_by: stratTask.created_by || userId,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    if (stratAttachments && stratAttachments.length > 0) {
+      newSpawnedTask.attachments = stratAttachments;
+    }
+
+    spawnedTask = await insertTaskWithUniqueCode(newSpawnedTask);
+  }
+
+  // 6. Update parent strategic task
+  let parentCleanNotes = (stratTask.notes || '')
+    .replace(/\[SPAWNED_DESIGN_TASK_ID:[^\]]+\]\n?/g, '')
+    .replace(/\[SPAWNED_DESIGN_TASK_CODE:[^\]]+\]\n?/g, '')
+    .trim();
+  const parentNotes = `[SPAWNED_DESIGN_TASK_ID:${spawnedTask.id}]\n[SPAWNED_DESIGN_TASK_CODE:${spawnedTask.task_code}]\n${parentCleanNotes}`.trim();
+
+  const stratUpdates: any = {
+    design_pic_id: input.design_pic_id || stratTask.design_pic_id || null,
+    spawned_design_task_id: spawnedTask.id,
+    status_design: 'DESIGN_APPROVED',
+    notes: parentNotes,
+    updated_at: new Date().toISOString()
+  };
+
+  let stratUpErr: any = null;
+  try {
+    const { error } = await supabase.from('tasks').update(stratUpdates).eq('id', taskId);
+    stratUpErr = error;
+  } catch (err: any) {
+    stratUpErr = err;
+  }
+
+  if (stratUpErr && (stratUpErr.code === 'PGRST204' || stratUpErr.message?.includes('column') || stratUpErr.details?.includes('column'))) {
+    const { spawned_design_task_id, ...safeStratUpdates } = stratUpdates;
+    await supabase.from('tasks').update(safeStratUpdates).eq('id', taskId);
+  }
+
+  // 7. Synchronize localStore in-memory cache safely
+  try {
+    const localTasks = localStore.getTasks();
+    let lIdx = localTasks.findIndex(t => t.id === taskId || t.task_code === taskId);
+    if (lIdx === -1) {
+      localTasks.push({
+        ...stratTask,
+        ...stratUpdates
+      });
+    } else {
+      localTasks[lIdx] = {
+        ...localTasks[lIdx],
+        ...stratUpdates
+      };
+    }
+    if (spawnedTask) {
+      let spIdx = localTasks.findIndex(t => t.id === spawnedTask.id);
+      if (spIdx === -1) {
+        localTasks.push(spawnedTask);
+      } else {
+        localTasks[spIdx] = { ...localTasks[spIdx], ...spawnedTask };
+      }
+    }
+    localStore.setStore('cmoms_tasks', localTasks);
+    localStore.handoverStrategicTaskToGD(taskId, input, userId);
+  } catch (localErr) {
+    console.warn('localStore handover sync ignored:', localErr);
+  }
+
+  invalidateStoreCache('tasks');
+  invalidateStoreCache('tasks_with_relations');
+
+  // 8. Send notification to assigned Graphic Designer
+  if (input.design_pic_id && input.design_pic_id !== userId) {
+    const assignedDesigner = localStore.getUserById(input.design_pic_id);
+    const assignedName = assignedDesigner?.full_name || 'Designer';
+    const taskCode = spawnedTask?.task_code || stratTask.task_code;
+    const campaignName = spawnedTask?.campaign_name || stratTask.campaign_name || 'Request';
+
+    await sendNotificationsSafe(
+      [input.design_pic_id],
+      'Tugas Desain Baru Dialihkan dari Strategic',
+      `Anda telah ditugaskan sebagai GD PIC untuk ${taskCode} (${campaignName}) yang dialihkan dari Konsep Strategic.`,
+      'info',
+      `/dashboard/tasks?taskId=${spawnedTask?.id || taskId}&tab=details`,
+      spawnedTask?.id || taskId,
+      userId
+    );
+  }
+
+  // 9. Add Audit Log
+  try {
+    await addAuditLog('creative_tasks', taskId, 'HANDOVER_TO_GD', userId, null, {
+      spawned_task_id: spawnedTask?.id,
+      spawned_task_code: spawnedTask?.task_code,
+      design_pic_id: input.design_pic_id,
+      target_pipeline: targetPipeline,
+      difficulty: input.design_difficulty
+    });
+  } catch {}
+
+  return {
+    success: true,
+    strategicTask: { ...stratTask, ...stratUpdates },
+    spawnedTask
+  };
 }
 
 export async function submitStrategicConcept(taskId: string, input: SubmitStrategicInput, userId: string): Promise<void> {
@@ -1275,8 +2173,41 @@ export async function submitStrategicConcept(taskId: string, input: SubmitStrate
     return;
   }
   const { data: currentTask } = await supabase.from('tasks').select('*').eq('id', taskId).single();
+  if (!currentTask) return;
+
+  const { data: user } = await supabase.from('users').select('id, full_name, role_name').eq('id', userId).single();
+
   const rawNotes = currentTask?.notes || '';
-  const baseNotes = rawNotes.replace(/\[STRAT_CONCEPT:\{[\s\S]*?\}\]\n?/g, '').trim();
+  let stratPicIds: string[] = [];
+  let stratPicsTag = '';
+  if (rawNotes.includes('[STRAT_PICS:')) {
+    const match = rawNotes.match(/\[STRAT_PICS:(\[[\s\S]*?\])\]/);
+    if (match) {
+      stratPicsTag = match[0];
+      try { stratPicIds = JSON.parse(match[1]); } catch {}
+    }
+  }
+
+  // Preserve existing [ATTACHMENTS:...] metadata tag
+  let attachmentsTag = '';
+  if (rawNotes.includes('[ATTACHMENTS:')) {
+    const matchAtt = rawNotes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+    if (matchAtt) {
+      attachmentsTag = matchAtt[0];
+    }
+  }
+
+  const isAssigned = currentTask.strat_pic_id === userId || stratPicIds.includes(userId);
+  const isAuthorized = user && (['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) || isAssigned);
+  if (!isAuthorized) {
+    throw new Error('Hanya Strategic PIC yang ditugaskan atau Lead/Admin/AE yang dapat submit hasil Strategic.');
+  }
+
+  const baseNotes = rawNotes
+    .replace(/\[STRAT_CONCEPT:\{[\s\S]*?\}\]\n?/g, '')
+    .replace(/\[STRAT_PICS:\[[\s\S]*?\]\]\n?/g, '')
+    .replace(/\[ATTACHMENTS:\[[\s\S]*?\]\]\n?/g, '')
+    .trim();
   const deckName = input.strat_concept_name || 'Strategic Concept Deck';
   const deckLink = input.strat_concept_link || input.strat_link || '';
   const submittedAt = new Date().toISOString();
@@ -1287,41 +2218,67 @@ export async function submitStrategicConcept(taskId: string, input: SubmitStrate
     submitted_at: submittedAt
   });
 
-  const finalNotes = input.notes 
-    ? `[STRAT_CONCEPT:${stratMetadata}]\n${input.notes}`
-    : (baseNotes ? `[STRAT_CONCEPT:${stratMetadata}]\n${baseNotes}` : `[STRAT_CONCEPT:${stratMetadata}]`);
+  const userNotesText = input.notes !== undefined ? (input.notes || '') : baseNotes;
+
+  let finalNotes = userNotesText;
+  if (stratPicsTag) finalNotes = `${stratPicsTag}\n${finalNotes}`.trim();
+  finalNotes = `[STRAT_CONCEPT:${stratMetadata}]\n${finalNotes}`.trim();
+  if (attachmentsTag) finalNotes = `${attachmentsTag}\n${finalNotes}`.trim();
 
   const updates: any = {
     status_strat: 'REVIEW',
+    requires_strategic_concept: true,
     notes: finalNotes,
     updated_at: new Date().toISOString()
   };
 
-  const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
-  if (error) {
-    console.error('Supabase submitStrategicConcept error:', error);
-    throw new Error(error.message || error.details || 'Gagal submit Strategic Concept');
+  let updateErr: any = null;
+  try {
+    const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
+    updateErr = error;
+  } catch (err: any) {
+    updateErr = err;
+  }
+  if (updateErr) {
+    console.error('Supabase submitStrategicConcept error:', updateErr.message || updateErr.details || updateErr);
+    const { pipeline_type, is_mockup, ...safeUpdates } = updates;
+    const { error: fbErr } = await supabase.from('tasks').update(safeUpdates).eq('id', taskId);
+    if (fbErr) {
+      console.error('Supabase submitStrategicConcept fallback error:', fbErr.message || fbErr.details || fbErr);
+      throw new Error(fbErr.message || fbErr.details || 'Gagal submit Strategic Concept');
+    }
   }
   invalidateStoreCache('tasks');
   await addAuditLog('creative_tasks', taskId, 'SUBMIT', userId, null, {
     strat_concept_name: deckName,
     strat_concept_link: deckLink,
-    status_strat: 'REVIEW'
+    status_strat: 'REVIEW',
+    notes: input.notes,
+    pipeline_type: 'STRATEGIC'
   });
+  localStore.submitStrategicConcept(taskId, input, userId);
 
-  // Notify Requester and Design PIC
   const taskCode = currentTask?.task_code || taskId;
+  const campaignName = currentTask?.campaign_name || 'Request';
+  const isResubmission = (currentTask?.strat_revision_count || 0) > 0;
+  const notifTitle = isResubmission
+    ? `Strategic Concept Disubmit Ulang (Revisi #${currentTask.strat_revision_count})`
+    : 'Strategic Concept Disubmit';
+  const notifMsg = `Strategic Concept untuk request ${taskCode} (${campaignName}) telah disubmit untuk review.`;
+
   const recipients = new Set<string>();
-  if (currentTask?.created_by) recipients.add(currentTask.created_by);
-  if (currentTask?.design_pic_id) recipients.add(currentTask.design_pic_id);
+  if (currentTask.created_by) recipients.add(currentTask.created_by);
+  if (currentTask.design_pic_id) recipients.add(currentTask.design_pic_id);
+  const { data: leadUsers } = await supabase.from('users').select('id').in('role_name', ['TEAM_LEAD', 'ADMIN']);
+  if (leadUsers) leadUsers.forEach((u: any) => recipients.add(u.id));
   recipients.delete(userId);
 
   await sendNotificationsSafe(
     Array.from(recipients),
-    'Strategic Concept Disubmit',
-    `Strategic Concept untuk request ${taskCode} telah disubmit untuk review.`,
+    notifTitle,
+    notifMsg,
     'info',
-    `/dashboard/tasks?taskId=${taskId}&tab=details`,
+    `/dashboard/tasks?taskId=${taskId}&tab=details&pipeline=STRATEGIC`,
     taskId,
     userId
   );
@@ -1335,12 +2292,26 @@ export async function updateTaskStatus(taskId: string, newStatus: DesignStatus, 
     localStore.updateTaskStatus(taskId, newStatus, userId);
     return;
   }
+  const { data: currentTask } = await supabase.from('tasks').select('*').eq('id', taskId).single();
+  if (!currentTask) return;
+
+  // Authorization check for design approval
+  if (newStatus === 'DESIGN_APPROVED') {
+    const { data: user } = await supabase.from('users').select('role_id, role_name').eq('id', userId).single();
+    const isAuthorized = user && (['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) || (user.role_name === 'REQUESTER' && currentTask.created_by === userId));
+    if (!isAuthorized) {
+      console.warn(`User ${userId} does not have authority to approve design.`);
+      return;
+    }
+    // Idempotency: already approved
+    if (currentTask.status_design === 'DESIGN_APPROVED') return;
+  }
+
   const updates: any = {
     status_design: newStatus,
     updated_at: new Date().toISOString()
   };
 
-  const { data: currentTask } = await supabase.from('tasks').select('*').eq('id', taskId).single();
   const oldStatus = currentTask?.status_design;
 
   if (newStatus === 'DESIGN_SUBMITTED') {
@@ -1354,25 +2325,27 @@ export async function updateTaskStatus(taskId: string, newStatus: DesignStatus, 
     }
   }
 
-  const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
-  if (error) throw error;
+  let updateErr;
+  try {
+    const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
+    updateErr = error;
+  } catch (err: any) {
+    updateErr = err;
+  }
+  if (updateErr && (updateErr.code === 'PGRST204' || updateErr.message?.includes('column'))) {
+    const { is_mockup, pipeline_type, ...safeUpdates } = updates;
+    const { error: fbErr } = await supabase.from('tasks').update(safeUpdates).eq('id', taskId);
+    if (fbErr) throw fbErr;
+  } else if (updateErr) {
+    throw updateErr;
+  }
 
   invalidateStoreCache('tasks');
   invalidateStoreCache('motion_tasks');
   await addAuditLog('creative_tasks', taskId, 'STATUS_TRANSITION', userId, null, updates);
 
-  if (newStatus === 'DESIGN_APPROVED') {
-    const { data: t } = await supabase.from('tasks').select('motion_readiness').eq('id', taskId).single();
-    if (t?.motion_readiness === 'READY_TO_ANIMATE') {
-      const { data: existingMotion } = await supabase.from('motion_tasks').select('id').eq('task_id', taskId).single();
-      if (!existingMotion) {
-        await supabase.from('motion_tasks').insert([{
-          task_id: taskId,
-          status_motion: 'QUEUED'
-        }]);
-      }
-    }
-  }
+  localStore.updateTaskStatus(taskId, newStatus, userId);
+
 
   // Dispatch status update notifications to all involved parties (excluding actor)
   let performerName: string | undefined;
@@ -1458,12 +2431,51 @@ export async function requestRevision(taskId: string, input: RevisionInput, perf
     return;
   }
   const { data: t } = await supabase.from('tasks').select('*').eq('id', taskId).single();
+  if (!t) return;
+
+  const { data: user } = await supabase.from('users').select('id, full_name, role_name').eq('id', performedBy).single();
+
+  if (input.stage === 'STRATEGIC') {
+    const isAuthorized = user && (['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) || (user.role_name === 'REQUESTER' && t.created_by === performedBy));
+    if (!isAuthorized) {
+      throw new Error('Hanya Requester, Strategic, Team Lead, atau Admin yang dapat meminta revisi Strategic.');
+    }
+  }
+
   const revCount = input.stage === 'STRATEGIC' ? (t?.strat_revision_count || 0) + 1 : (t?.design_revision_count || 0) + 1;
+
+  let assetName: string | null = null;
+  let assetLink: string | null = null;
+  let submittedBy: string | null = null;
+  let submittedAt: string | null = null;
+
+  if (input.stage === 'STRATEGIC') {
+    assetName = t?.strat_concept_name || null;
+    assetLink = t?.strat_concept_link || null;
+    submittedBy = t?.strat_pic_id || null;
+    submittedAt = t?.strat_submitted_at || null;
+  } else {
+    assetName = t?.final_asset_name || null;
+    assetLink = t?.final_asset_link || null;
+    submittedBy = t?.design_pic_id || null;
+    submittedAt = t?.submission_date || null;
+  }
+
+  const snapshotMeta = assetLink ? {
+    asset_name: assetName,
+    asset_link: assetLink,
+    submitted_by: submittedBy,
+    submitted_at: submittedAt
+  } : null;
+
+  const revisionNotesWithSnapshot = snapshotMeta 
+    ? `[${input.reason_category}] ${input.notes}\n<!--CMOMS_REVISION_ASSET:${JSON.stringify(snapshotMeta)}-->`
+    : `[${input.reason_category}] ${input.notes}`;
 
   const { error: revErr } = await supabase.from('task_revisions').insert([{
     task_id: taskId,
     stage: input.stage,
-    revision_notes: `[${input.reason_category}] ${input.notes}`,
+    revision_notes: revisionNotesWithSnapshot,
     requested_by: performedBy,
     status: 'PENDING'
   }]);
@@ -1480,25 +2492,27 @@ export async function requestRevision(taskId: string, input: RevisionInput, perf
     updates.design_revision_count = revCount;
   }
 
-  const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
-  if (error) throw error;
+  let updateErr: any = null;
+  try {
+    const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
+    updateErr = error;
+  } catch (err: any) {
+    updateErr = err;
+  }
+  if (updateErr) {
+    const { pipeline_type, is_mockup, ...safeUpdates } = updates;
+    const { error: fbErr } = await supabase.from('tasks').update(safeUpdates).eq('id', taskId);
+    if (fbErr) throw fbErr;
+  }
   invalidateStoreCache('tasks');
   await addAuditLog('creative_tasks', taskId, 'REVISION_REQUEST', performedBy, null, { ...input, revision_number: revCount });
+  localStore.requestRevision(taskId, input, performedBy);
 
   // Notification for Revision
-  let performerName = 'User';
-  try {
-    const { data: performerUser } = await supabase.from('users').select('full_name').eq('id', performedBy).single();
-    if (performerUser?.full_name) performerName = performerUser.full_name;
-  } catch {}
-  
+  const performerName = user?.full_name || 'User';
   const taskCode = t?.task_code || taskId;
   const campaignName = t?.campaign_name || 'Request';
 
-  // Determine recipients who need to know/act upon revision:
-  // - If stage is STRATEGIC: Strategic PIC(s) + Requester
-  // - If stage is DESIGN: Design PIC + Requester
-  // - If stage is MOTION: Motion PIC + Requester
   const recipients = new Set<string>();
   if (input.stage === 'STRATEGIC') {
     if (t?.strat_pic_id) recipients.add(t.strat_pic_id);
@@ -1511,7 +2525,6 @@ export async function requestRevision(taskId: string, input: RevisionInput, perf
         } catch {}
       }
     }
-    if (t?.created_by) recipients.add(t.created_by);
   } else if (input.stage === 'DESIGN') {
     if (t?.design_pic_id) recipients.add(t.design_pic_id);
     if (t?.created_by) recipients.add(t.created_by);
@@ -1522,12 +2535,20 @@ export async function requestRevision(taskId: string, input: RevisionInput, perf
 
   recipients.delete(performedBy);
 
+  const notifTitle = input.stage === 'STRATEGIC' ? 'Revisi Strategic Concept Diperlukan' : 'Request Membutuhkan Revisi';
+  const notifMsg = input.stage === 'STRATEGIC'
+    ? `Strategic Concept untuk request ${taskCode} (${campaignName}) memerlukan revisi dari ${performerName}. Catatan: ${input.notes}`
+    : `Request ${taskCode} (${campaignName}) membutuhkan revisi [${input.stage}] dari ${performerName}.`;
+  const notifLink = input.stage === 'STRATEGIC'
+    ? `/dashboard/tasks?taskId=${taskId}&tab=details&pipeline=STRATEGIC`
+    : `/dashboard/tasks?taskId=${taskId}&tab=details`;
+
   await sendNotificationsSafe(
     Array.from(recipients),
-    'Request Membutuhkan Revisi',
-    `Request ${taskCode} (${campaignName}) membutuhkan revisi [${input.stage}] dari ${performerName}.`,
+    notifTitle,
+    notifMsg,
     'warning',
-    `/dashboard/tasks?taskId=${taskId}&tab=details`,
+    notifLink,
     taskId,
     performedBy,
     performerName
@@ -1535,62 +2556,242 @@ export async function requestRevision(taskId: string, input: RevisionInput, perf
 }
 
 export async function setMotionReadyness(taskId: string, isReady: boolean, performedBy: string): Promise<void> {
-  if (!supabase) {
-    invalidateStoreCache('tasks');
-    invalidateStoreCache('motion_tasks');
-    localStore.setMotionReadyness(taskId, isReady, performedBy);
+  if (isReady) {
+    await forwardTaskToMotion(taskId, performedBy);
     return;
   }
-  const status = isReady ? 'READY_TO_ANIMATE' : 'WAITING_ASSET_GD';
-  const { error } = await supabase.from('tasks').update({ motion_readiness: status }).eq('id', taskId);
+
+  if (!supabase) {
+    invalidateStoreCache('tasks');
+    localStore.setMotionReadyness(taskId, false, performedBy);
+    return;
+  }
+  const { data: existingMotion, error: motionLookupError } = await supabase
+    .from('motion_tasks')
+    .select('id')
+    .eq('task_id', taskId)
+    .maybeSingle();
+  if (motionLookupError) throw motionLookupError;
+  if (existingMotion) throw new Error('Request yang sudah diteruskan tidak dapat dibatalkan melalui perubahan readiness.');
+
+  const { error } = await supabase.from('tasks').update({
+    motion_readiness: 'WAITING_ASSET_GD',
+    updated_at: new Date().toISOString()
+  }).eq('id', taskId);
   if (error) throw error;
   invalidateStoreCache('tasks');
-  invalidateStoreCache('motion_tasks');
+}
 
-  if (isReady) {
-    const { data } = await supabase.from('motion_tasks').select('id').eq('task_id', taskId).single();
-    if (!data) {
-      await supabase.from('motion_tasks').insert([{
-        task_id: taskId,
-        status_motion: 'QUEUED'
-      }]);
+export async function forwardTaskToMotion(taskId: string, performedBy: string): Promise<void> {
+  const inFlight = motionForwardInFlight.get(taskId);
+  if (inFlight) return inFlight;
+
+  const operation = forwardTaskToMotionInternal(taskId, performedBy);
+  motionForwardInFlight.set(taskId, operation);
+  try {
+    await operation;
+  } finally {
+    if (motionForwardInFlight.get(taskId) === operation) {
+      motionForwardInFlight.delete(taskId);
     }
-
-    const { data: currentTask } = await supabase.from('tasks').select('task_code, campaign_name, created_by').eq('id', taskId).single();
-    const taskCode = currentTask?.task_code || taskId;
-    const campaignName = currentTask?.campaign_name || 'Request';
-
-    const recipients = new Set<string>();
-    if (currentTask?.created_by) recipients.add(currentTask.created_by);
-    recipients.delete(performedBy);
-
-    await sendNotificationsSafe(
-      Array.from(recipients),
-      'Asset Siap untuk Motion',
-      `Asset GD untuk request ${taskCode} (${campaignName}) telah siap dianimasikan.`,
-      'info',
-      '/dashboard/motion',
-      taskId,
-      performedBy
-    );
   }
+}
+
+async function forwardTaskToMotionInternal(taskId: string, performedBy: string): Promise<void> {
+  if (!supabase) {
+    localStore.forwardTaskToMotion(taskId, performedBy);
+    invalidateStoreCache('tasks');
+    invalidateStoreCache('tasks_with_relations');
+    invalidateStoreCache('motion_tasks');
+    return;
+  }
+  const db = supabase;
+
+  const { data: currentTask, error: taskError } = await db
+    .from('tasks')
+    .select('*')
+    .eq('id', taskId)
+    .maybeSingle();
+  if (taskError) throw taskError;
+  if (!currentTask) throw new Error('Request tidak ditemukan.');
+  if (!canForwardToMotion(currentTask)) {
+    throw new Error('Hanya request Approved dari pipeline GD Mockup atau GD E-Commerce yang dapat diteruskan ke Motion.');
+  }
+
+  const [
+    { data: actor, error: actorError },
+    { data: existingMotion, error: motionLookupError }
+  ] = await Promise.all([
+    db.from('users').select('role_name').eq('id', performedBy).maybeSingle(),
+    db.from('motion_tasks').select('id, status_motion').eq('task_id', taskId).maybeSingle()
+  ]);
+  if (actorError) throw actorError;
+  if (motionLookupError) throw motionLookupError;
+
+  const effectiveRole = actor?.role_name || localStore.getUserById(performedBy)?.role_name;
+  if (!effectiveRole || !['ADMIN', 'TEAM_LEAD', 'DESIGNER', 'REQUESTER', 'STRATEGIC_PIC'].includes(effectiveRole)) {
+    throw new Error('Anda tidak memiliki izin untuk meneruskan request ke Motion.');
+  }
+
+  const unpackedNotes = extractAttachmentsFromNotes(currentTask.notes);
+  const attachments = Array.isArray(currentTask.attachments) && currentTask.attachments.length > 0
+    ? currentTask.attachments as TaskAttachment[]
+    : (unpackedNotes.attachments.length > 0
+      ? unpackedNotes.attachments
+      : localStore.getTaskAttachments(taskId));
+  const motionNotes = packAttachmentsIntoNotes(unpackedNotes.cleanNotes, attachments);
+
+  const setMotionReady = async () => {
+    const taskUpdates: Record<string, any> = {
+      motion_readiness: 'READY_TO_ANIMATE',
+      updated_at: new Date().toISOString()
+    };
+    if (attachments.length > 0 && (!currentTask.notes || !currentTask.notes.includes('[ATTACHMENTS:'))) {
+      taskUpdates.notes = motionNotes;
+    }
+    const { error } = await db.from('tasks').update(taskUpdates).eq('id', taskId);
+    if (error) throw error;
+  };
+
+  if (existingMotion) {
+    await setMotionReady();
+    try {
+      localStore.forwardTaskToMotion(taskId, performedBy);
+    } catch (lsErr) {
+      console.warn('localStore forwardTaskToMotion fallback:', lsErr);
+    }
+    invalidateStoreCache('tasks');
+    invalidateStoreCache('tasks_with_relations');
+    invalidateStoreCache('motion_tasks');
+    return;
+  }
+
+  const timestamp = new Date().toISOString();
+  const { data: createdMotion, error: insertError } = await db
+    .from('motion_tasks')
+    .insert([{
+      task_id: currentTask.id,
+      status_motion: 'QUEUED',
+      created_at: timestamp,
+      updated_at: timestamp
+    }])
+    .select('id')
+    .single();
+
+  if (insertError) {
+    const { data: racedMotion, error: racedLookupError } = await db
+      .from('motion_tasks')
+      .select('id')
+      .eq('task_id', taskId)
+      .maybeSingle();
+    if (racedLookupError) throw racedLookupError;
+    if (!racedMotion) throw insertError;
+    await setMotionReady();
+    invalidateStoreCache('tasks');
+    invalidateStoreCache('tasks_with_relations');
+    invalidateStoreCache('motion_tasks');
+    return;
+  }
+  if (!createdMotion) throw new Error('Motion task tidak berhasil tersimpan.');
+
+  try {
+    await setMotionReady();
+    try {
+      localStore.forwardTaskToMotion(taskId, performedBy);
+    } catch (lsErr) {
+      console.warn('localStore forwardTaskToMotion fallback:', lsErr);
+    }
+  } catch (updateError) {
+    const { error: rollbackError } = await db.from('motion_tasks').delete().eq('id', createdMotion.id);
+    if (rollbackError) {
+      throw new Error(`Gagal memperbarui status request setelah membuat antrean Motion, dan penghapusan rollback juga gagal: ${rollbackError.message}`);
+    }
+    throw updateError;
+  }
+
+  await addAuditLog('motion_tasks', createdMotion.id, 'CREATE', performedBy, null, {
+    task_id: currentTask.id,
+    status_motion: 'QUEUED',
+    attachments_count: attachments.length
+  });
+
+  const recipientIds = new Set<string>();
+  if (currentTask.created_by) recipientIds.add(currentTask.created_by);
+  const { data: motionUsers, error: motionUsersError } = await db
+    .from('users')
+    .select('id')
+    .in('role_name', ['TEAM_LEAD', 'MOTION_PIC']);
+  if (motionUsersError) {
+    console.warn('Motion forwarding succeeded, but Motion notification recipients could not be loaded:', motionUsersError);
+  }
+  (motionUsers || []).forEach((motionUser: { id: string }) => recipientIds.add(motionUser.id));
+  recipientIds.delete(performedBy);
+
+  await sendNotificationsSafe(
+    Array.from(recipientIds),
+    'Request Diteruskan ke Motion Pipeline',
+    `Request ${currentTask.task_code || taskId} (${currentTask.campaign_name || 'Request'}) telah diteruskan ke antrean Motion.`,
+    'info',
+    '/dashboard/motion',
+    taskId,
+    performedBy
+  );
+
+  invalidateStoreCache('tasks');
+  invalidateStoreCache('tasks_with_relations');
+  invalidateStoreCache('motion_tasks');
 }
 
 
 export async function editTask(taskId: string, input: Partial<CreateTaskInput>, updatedBy: string, userRole?: string): Promise<void> {
-  if (!supabase) return;
-  if (userRole === 'REQUESTER') {
-    const { data: currentTask } = await supabase.from('tasks').select('created_by').eq('id', taskId).single();
-    if (currentTask && currentTask.created_by !== updatedBy) {
-      throw new Error('Unauthorized: Requester only allowed to edit tasks they created.');
+  if (!supabase) {
+    localStore.editTask(taskId, input as CreateTaskInput, updatedBy);
+    return;
+  }
+
+  const { data: currentTask } = await supabase.from('tasks').select('*').eq('id', taskId).single();
+  if (!currentTask) {
+    throw new Error('Task tidak ditemukan.');
+  }
+
+  // Backend authorization validation
+  if (userRole) {
+    const isLeadOrAdmin = ['ADMIN', 'TEAM_LEAD'].includes(userRole);
+    const isCreatorRequester = userRole === 'REQUESTER' && currentTask.created_by === updatedBy;
+    const isAssignedStratPic = userRole === 'STRATEGIC_PIC' && (
+      currentTask.strat_pic_id === updatedBy ||
+      (currentTask.notes && currentTask.notes.includes(updatedBy))
+    );
+    if (!isLeadOrAdmin && !isCreatorRequester && !isAssignedStratPic) {
+      throw new Error('Unauthorized: Anda tidak memiliki izin untuk mengedit task ini.');
     }
   }
+
+  // Validate Campaign Name if provided
+  let campaignName = currentTask.campaign_name;
+  if (input.campaign_name !== undefined) {
+    const rawCamp = String(input.campaign_name).trim();
+    const normalizedCamp = normalizeCampaignName(rawCamp);
+    if (isValidCampaignName(normalizedCamp)) {
+      campaignName = normalizedCamp;
+    } else if (rawCamp === currentTask.campaign_name) {
+      campaignName = currentTask.campaign_name;
+    } else {
+      throw new Error(`Campaign Name tidak valid (${rawCamp}). Pilihan yang tersedia: BAU, DD, PAYDAY, SPECIAL CAMPAIGN.`);
+    }
+  }
+
+  const currentPipeline = currentTask.pipeline_type || (currentTask.requires_strategic_concept ? 'STRATEGIC' : isMockupTask(currentTask) ? 'GD_MOCKUP' : 'GD_NON_MOCKUP');
 
   let rawStratPicIds: string[] | null = null;
   if (input.strat_pic_ids !== undefined) {
     rawStratPicIds = input.strat_pic_ids.filter(id => Boolean(id && id.trim()));
   } else if (input.strat_pic_id !== undefined) {
     rawStratPicIds = input.strat_pic_id ? [input.strat_pic_id.trim()] : [];
+  }
+
+  if (currentPipeline === 'STRATEGIC' && rawStratPicIds !== null && rawStratPicIds.length === 0) {
+    throw new Error('Strategic PIC wajib diisi untuk task Strategic.');
   }
 
   const stratPicId = (input.requires_strategic_concept !== false && rawStratPicIds && rawStratPicIds.length > 0)
@@ -1602,30 +2803,67 @@ export async function editTask(taskId: string, input: Partial<CreateTaskInput>, 
   };
 
   if (input.client_id !== undefined) updates.client_id = input.client_id;
-  if (input.campaign_name !== undefined) updates.campaign_name = input.campaign_name;
+  updates.campaign_name = campaignName;
   if (input.content_type_id !== undefined) updates.content_type_id = input.content_type_id;
-  if (input.task_source !== undefined) updates.task_source = input.task_source;
+  if (currentPipeline === 'GD_MOCKUP') {
+    updates.task_source = 'ORCA';
+    updates.is_mockup = true;
+  } else if (currentPipeline === 'GD_NON_MOCKUP') {
+    updates.task_source = 'ECOMMERCE';
+    updates.is_mockup = false;
+  } else if (input.task_source !== undefined) {
+    updates.task_source = input.task_source;
+  }
+  if (input.is_mockup !== undefined && currentPipeline !== 'GD_MOCKUP' && currentPipeline !== 'GD_NON_MOCKUP') {
+    updates.is_mockup = input.is_mockup;
+  }
   if (input.platform !== undefined) updates.platform = input.platform;
   if (input.req_qty !== undefined) {
     updates.req_qty = input.req_qty;
     updates.output_qty = input.req_qty;
   }
-  if (input.req_date !== undefined) updates.req_date = input.req_date;
-  if (input.due_date !== undefined) updates.due_date = input.due_date;
+  if (input.req_date !== undefined && input.req_date && input.req_date.trim() !== '') {
+    updates.req_date = input.req_date;
+  }
+  if (input.due_date !== undefined && input.due_date && input.due_date.trim() !== '') {
+    updates.due_date = input.due_date;
+  }
 
-  const { data: currentTaskNotes } = await supabase.from('tasks').select('notes').eq('id', taskId).single();
-  let baseNotes = input.notes !== undefined ? (input.notes || '') : (currentTaskNotes?.notes || '');
+  if (currentPipeline === 'STRATEGIC' || input.requires_strategic_concept) {
+    updates.requires_strategic_concept = true;
+  } else if (input.requires_strategic_concept !== undefined) {
+    updates.requires_strategic_concept = input.requires_strategic_concept;
+  }
+
+  if (input.design_pic_id !== undefined) {
+    updates.design_pic_id = input.design_pic_id || null;
+  }
+
+  const currentTaskNotes = currentTask.notes || '';
+  let baseNotes = input.notes !== undefined ? (input.notes || '') : currentTaskNotes;
   
   // Extract and preserve [STRAT_CONCEPT:...]
   let stratConceptTag = '';
-  if (currentTaskNotes?.notes && currentTaskNotes.notes.includes('[STRAT_CONCEPT:')) {
-    const match = currentTaskNotes.notes.match(/\[STRAT_CONCEPT:\{[\s\S]*?\}\]/);
+  if (currentTaskNotes.includes('[STRAT_CONCEPT:')) {
+    const match = currentTaskNotes.match(/\[STRAT_CONCEPT:\{[\s\S]*?\}\]/);
     if (match) stratConceptTag = match[0];
+  }
+
+  // Extract and preserve or update [ATTACHMENTS:...]
+  let attachmentsTag = '';
+  if (input.attachments !== undefined) {
+    if (input.attachments.length > 0) {
+      attachmentsTag = `[ATTACHMENTS:${JSON.stringify(input.attachments)}]`;
+    }
+  } else if (currentTaskNotes.includes('[ATTACHMENTS:')) {
+    const matchAtt = currentTaskNotes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+    if (matchAtt) attachmentsTag = matchAtt[0];
   }
 
   // Strip existing tags
   baseNotes = baseNotes.replace(/\[STRAT_CONCEPT:\{[\s\S]*?\}\]\n?/g, '')
                        .replace(/\[STRAT_PICS:\[[\s\S]*?\]\]\n?/g, '')
+                       .replace(/\[ATTACHMENTS:\[[\s\S]*?\]\]\n?/g, '')
                        .trim();
 
   let stratPicsTag = '';
@@ -1636,9 +2874,14 @@ export async function editTask(taskId: string, input: Partial<CreateTaskInput>, 
   let finalNotes = baseNotes;
   if (stratConceptTag) finalNotes = `${stratConceptTag}\n${finalNotes}`.trim();
   if (stratPicsTag) finalNotes = `${stratPicsTag}\n${finalNotes}`.trim();
+  if (attachmentsTag) finalNotes = `${attachmentsTag}\n${finalNotes}`.trim();
 
-  if (input.notes !== undefined || rawStratPicIds !== null) {
+  if (input.notes !== undefined || rawStratPicIds !== null || input.attachments !== undefined || attachmentsTag) {
     updates.notes = finalNotes;
+  }
+
+  if (input.attachments !== undefined) {
+    updates.attachments = input.attachments;
   }
 
   if (input.requires_strategic_concept !== undefined) {
@@ -1653,24 +2896,177 @@ export async function editTask(taskId: string, input: Partial<CreateTaskInput>, 
     updates.strat_pic_id = stratPicId;
   }
 
-  const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
-  if (error) {
-    console.error('Supabase editTask error:', error);
-    throw new Error(error.message || error.details || 'Gagal menyimpan perubahan task');
+  let updateErr: any = null;
+  try {
+    const { error } = await supabase.from('tasks').update(updates).eq('id', taskId);
+    updateErr = error;
+  } catch (err: any) {
+    updateErr = err;
+  }
+  if (updateErr) {
+    const { pipeline_type, is_mockup, attachments, ...safeUpdates } = updates;
+    const { error: fbErr } = await supabase.from('tasks').update(safeUpdates).eq('id', taskId);
+    if (fbErr) {
+      console.error('Supabase editTask error:', fbErr.message || fbErr.details || fbErr);
+      throw new Error(fbErr.message || fbErr.details || 'Gagal menyimpan perubahan task');
+    }
   }
   invalidateStoreCache('tasks');
   await addAuditLog('tasks', taskId, 'UPDATE', updatedBy, null, updates);
+
+  // Notify GD PIC if assigned/changed during edit
+  if (input.design_pic_id && input.design_pic_id !== currentTask.design_pic_id && input.design_pic_id !== updatedBy) {
+    await sendNotificationsSafe(
+      [input.design_pic_id],
+      'Penugasan Desain Baru',
+      `Anda ditugaskan mengerjakan request ${currentTask.task_code || taskId} (${campaignName}).`,
+      'info',
+      `/dashboard/tasks?taskId=${taskId}&tab=details`,
+      taskId,
+      updatedBy
+    );
+  }
+
+  try {
+    localStore.editTask(taskId, input as CreateTaskInput, updatedBy, userRole);
+  } catch (localErr) {
+    // Non-fatal: Supabase database update already succeeded.
+  }
 }
 
 export async function deleteTask(taskId: string, deletedBy: string): Promise<void> {
-  if (!supabase) return;
-  await supabase.from('task_revisions').delete().eq('task_id', taskId);
-  await supabase.from('motion_tasks').delete().eq('task_id', taskId);
-  const { error } = await supabase.from('tasks').delete().eq('id', taskId);
-  if (error) throw error;
+  // 1. Always update localStore first for instant local responsiveness and fallback store sync
+  try {
+    localStore.deleteTask(taskId, deletedBy);
+  } catch (err) {
+    console.warn('localStore.deleteTask non-fatal error:', err);
+  }
+
+  // 2. Cascade delete on Supabase database
+  if (supabase) {
+    try {
+      // Break self-referencing / linked task references so foreign key constraints don't block deletion
+      try {
+        await supabase
+          .from('tasks')
+          .update({ source_strategic_task_id: null })
+          .eq('source_strategic_task_id', taskId);
+      } catch (err) {
+        console.warn('Break source_strategic_task_id non-fatal:', err);
+      }
+
+      try {
+        await supabase
+          .from('tasks')
+          .update({ spawned_design_task_id: null })
+          .eq('spawned_design_task_id', taskId);
+      } catch (err) {
+        console.warn('Break spawned_design_task_id non-fatal:', err);
+      }
+
+      // Delete child relations
+      try {
+        await supabase.from('task_revisions').delete().eq('task_id', taskId);
+      } catch {}
+
+      try {
+        await supabase.from('task_comments').delete().eq('task_id', taskId);
+      } catch {}
+
+      try {
+        await supabase.from('comments').delete().eq('task_id', taskId);
+      } catch {}
+
+      try {
+        await supabase.from('motion_tasks').delete().eq('task_id', taskId);
+      } catch {}
+
+      try {
+        await supabase.from('google_sheets_sync_outbox').delete().eq('entity_id', taskId);
+      } catch {}
+
+      try {
+        await supabase.from('notifications').delete().or(`request_id.eq.${taskId},task_id.eq.${taskId}`);
+      } catch {}
+
+      // Delete the main task row
+      const { error } = await supabase.from('tasks').delete().eq('id', taskId);
+      if (error) {
+        console.error('Supabase deleteTask error:', error);
+        throw new Error(error.message || error.details || 'Gagal menghapus task dari database');
+      }
+
+      try {
+        await addAuditLog('tasks', taskId, 'DELETE', deletedBy, null, null);
+      } catch {}
+    } catch (err) {
+      console.error('Error in deleteTask execution:', err);
+      throw err;
+    }
+  }
+
+  // 3. Invalidate ALL related cache layers
+  invalidateStoreCache('tasks');
+  invalidateStoreCache('tasks_with_relations');
+  invalidateStoreCache('motion_tasks');
+}
+
+export async function clearAllRequests(deletedBy = 'SYSTEM'): Promise<{
+  deletedTasks: number;
+  deletedMotionTasks: number;
+  deletedRevisions: number;
+  deletedComments: number;
+}> {
+  let deletedTasks = 0;
+  let deletedMotionTasks = 0;
+  let deletedRevisions = 0;
+  let deletedComments = 0;
+
+  if (supabase) {
+    try {
+      const { count: tCount } = await supabase.from('tasks').select('*', { count: 'exact', head: true });
+      const { count: mCount } = await supabase.from('motion_tasks').select('*', { count: 'exact', head: true });
+      const { count: rCount } = await supabase.from('task_revisions').select('*', { count: 'exact', head: true });
+      const { count: cCount } = await supabase.from('task_comments').select('*', { count: 'exact', head: true });
+
+      deletedTasks = tCount || 0;
+      deletedMotionTasks = mCount || 0;
+      deletedRevisions = rCount || 0;
+      deletedComments = cCount || 0;
+
+      // Break self-referencing links
+      try {
+        await supabase.from('tasks').update({ source_strategic_task_id: null, spawned_design_task_id: null }).neq('id', '00000000-0000-0000-0000-000000000000');
+      } catch {}
+
+      // Delete child relations
+      await supabase.from('task_revisions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      await supabase.from('task_comments').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      try { await supabase.from('comments').delete().neq('id', '00000000-0000-0000-0000-000000000000'); } catch {}
+      await supabase.from('motion_tasks').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      try { await supabase.from('google_sheets_sync_outbox').delete().neq('id', '00000000-0000-0000-0000-000000000000'); } catch {}
+
+      // Delete tasks
+      await supabase.from('tasks').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+
+      // Clean notifications
+      try { await supabase.from('notifications').delete().neq('id', '00000000-0000-0000-0000-000000000000'); } catch {}
+
+      await addAuditLog('tasks', 'ALL', 'DELETE', deletedBy, null, { message: 'All pipeline requests deleted' });
+    } catch (err) {
+      console.error('Error during clearAllRequests in Supabase:', err);
+    }
+  }
+
+  // Clear localStore
+  localStore.clearAllRequests();
+
+  // Invalidate all caches
   invalidateStoreCache('tasks');
   invalidateStoreCache('motion_tasks');
-  await addAuditLog('tasks', taskId, 'DELETE', deletedBy, null, null);
+  invalidateStoreCache('tasks_with_relations');
+
+  return { deletedTasks, deletedMotionTasks, deletedRevisions, deletedComments };
 }
 
 export async function getAuditLogs(): Promise<AuditLog[]> {
@@ -1942,6 +3338,88 @@ export async function deleteHoliday(idOrDate: number | string): Promise<void> {
   }
 }
 
+/**
+ * Synchronize official Indonesian National Holidays & Cuti Bersama from official live feeds
+ */
+export async function syncOfficialHolidays(targetYears?: number[]): Promise<import('./indonesian-holidays').HolidaySyncResult> {
+  const { fetchOfficialIndonesianHolidays, setHolidaySyncMeta } = await import('./indonesian-holidays');
+  const { holidays: officialList, source } = await fetchOfficialIndonesianHolidays(targetYears);
+
+  const existingLocal = localStore.getHolidays();
+  const holidayMap = new Map<string, Holiday>();
+
+  // Preserve existing custom/manual ones
+  for (const h of existingLocal) {
+    holidayMap.set(h.holiday_date, h);
+  }
+
+  let added = 0;
+  let updated = 0;
+
+  for (const off of officialList) {
+    const existing = holidayMap.get(off.holiday_date);
+    if (!existing) {
+      holidayMap.set(off.holiday_date, off);
+      added++;
+    } else {
+      if (existing.description !== off.description || !existing.is_official) {
+        holidayMap.set(off.holiday_date, {
+          ...existing,
+          description: off.description,
+          is_cuti_bersama: off.is_cuti_bersama,
+          is_official: true,
+          year: off.year,
+        });
+        updated++;
+      }
+    }
+  }
+
+  const merged = Array.from(holidayMap.values()).sort((a, b) => a.holiday_date.localeCompare(b.holiday_date));
+
+  localStore.setHolidays(merged);
+
+  if (supabase) {
+    try {
+      const recordsToUpsert = merged.map(h => ({
+        date: h.holiday_date,
+        holiday_date: h.holiday_date,
+        description: h.description,
+      }));
+      for (let i = 0; i < recordsToUpsert.length; i += 50) {
+        const batch = recordsToUpsert.slice(i, i + 50);
+        await supabase.from('holidays').upsert(batch, { onConflict: 'holiday_date' as any });
+      }
+    } catch (err) {
+      console.warn('Supabase bulk holiday upsert warning:', err);
+    }
+  }
+
+  invalidateStoreCache('holidays');
+  const nowIso = new Date().toISOString();
+  const years = Array.from(new Set(merged.map(h => parseInt(h.holiday_date.substring(0, 4), 10)))).sort();
+  setHolidaySyncMeta({
+    syncedAt: nowIso,
+    totalCount: merged.length,
+    years,
+  });
+
+  return {
+    success: true,
+    message: `Berhasil menyinkronkan ${merged.length} hari libur resmi Indonesia (+${added} baru, ${updated} diperbarui).`,
+    source,
+    addedCount: added,
+    updatedCount: updated,
+    totalCount: merged.length,
+    years,
+    syncedAt: nowIso,
+    holidays: merged,
+  };
+}
+
+export { getHolidaySyncMeta } from './indonesian-holidays';
+export type { HolidaySyncResult, HolidaySyncMeta } from './indonesian-holidays';
+
 export async function createUser(input: {
   email: string;
   role_name: RoleName;
@@ -2166,11 +3644,17 @@ export interface CreateStandaloneMotionInput {
   period_start: string;
   period_end: string;
   studio: 'Jakarta' | 'Bandung';
+  notes?: string;
+  attachments?: TaskAttachment[];
 }
 
 export async function createStandaloneMotionTask(input: CreateStandaloneMotionInput, userId: string): Promise<MotionTask> {
+  const rawCampaign = (input.campaign_type || '').trim();
+  const normalizedCampaign = normalizeCampaignName(rawCampaign);
+  const validCampaign = isValidCampaignName(normalizedCampaign) ? normalizedCampaign : input.campaign_type;
+
   if (!supabase) {
-    return localStore.createStandaloneMotionTask(input as any, userId);
+    return localStore.createStandaloneMotionTask({ ...input, campaign_type: validCampaign } as any, userId);
   }
 
   // Find the max existing MOT-xxxx sequence to avoid duplicates
@@ -2204,7 +3688,7 @@ export async function createStandaloneMotionTask(input: CreateStandaloneMotionIn
     status_strat: 'NOT_REQUIRED',
     status_design: 'DESIGN_APPROVED',
     motion_readiness: 'READY_TO_ANIMATE',
-    notes: `Studio: ${input.studio}, Campaign: ${input.campaign_type}`,
+    notes: `Studio: ${input.studio}, Campaign: ${validCampaign}`,
     created_by: userId
   };
 
@@ -2224,13 +3708,50 @@ export async function createStandaloneMotionTask(input: CreateStandaloneMotionIn
   if (motionErr) throw motionErr;
 
   await addAuditLog('motion_tasks', createdMotion.id, 'CREATE', userId, null, createdMotion);
+  localStore.createStandaloneMotionTask({ ...input, campaign_type: validCampaign } as any, userId);
+
+  // Real-Time Google Sheets Sync (Motion Tab)
+  try {
+    const clients = await getClients();
+    const client = clients.find(c => c.id === input.client_id);
+    const motionTaskObj: MotionTask = {
+      ...createdMotion,
+      client_id: input.client_id,
+      platform: input.platform,
+      motion_type: input.motion_type,
+      campaign_type: validCampaign,
+      production_date: input.production_date,
+      period_start: input.period_start,
+      period_end: input.period_end,
+      studio: input.studio,
+      motion_difficulty: input.motion_difficulty || 'LVL_1_SIMPLE',
+      link_motion: null,
+      notes: ''
+    };
+
+    const { targetTab, payload } = buildMotionTaskSyncPayload(
+      motionTaskObj,
+      client?.name
+    );
+
+    void enqueueGoogleSheetsSync({
+      idempotencyKey: `CREATE_MOTION_${createdMotion.id}`,
+      eventType: 'CREATE_MOTION',
+      entityId: createdMotion.id,
+      taskCode: createdTask.task_code || `MOT-${createdMotion.id.substring(0, 8)}`,
+      targetTab,
+      payload,
+    });
+  } catch (syncErr) {
+    console.warn('Failed to enqueue Motion Google Sheets sync:', syncErr);
+  }
 
   return {
     ...createdMotion,
     client_id: input.client_id,
     platform: input.platform,
     motion_type: input.motion_type,
-    campaign_type: input.campaign_type,
+    campaign_type: validCampaign,
     production_date: input.production_date,
     period_start: input.period_start,
     period_end: input.period_end,
@@ -2242,7 +3763,14 @@ export async function createStandaloneMotionTask(input: CreateStandaloneMotionIn
 }
 
 export async function editStandaloneMotionTask(motionTaskId: string, input: CreateStandaloneMotionInput, userId: string): Promise<void> {
-  if (!supabase) return;
+  const rawCampaign = (input.campaign_type || '').trim();
+  const normalizedCampaign = normalizeCampaignName(rawCampaign);
+  const validCampaign = isValidCampaignName(normalizedCampaign) ? normalizedCampaign : input.campaign_type;
+
+  if (!supabase) {
+    localStore.editStandaloneMotionTask(motionTaskId, { ...input, campaign_type: validCampaign }, userId);
+    return;
+  }
   const { data: motion } = await supabase.from('motion_tasks').select('*').eq('id', motionTaskId).single();
   if (!motion) return;
 
@@ -2261,34 +3789,41 @@ export async function editStandaloneMotionTask(motionTaskId: string, input: Crea
       platform: input.platform,
       campaign_name: input.motion_type,
       due_date: input.period_end ? `${input.period_end}T00:00:00Z` : new Date().toISOString(),
-      notes: `Studio: ${input.studio}, Campaign: ${input.campaign_type}`,
+      notes: `Studio: ${input.studio}, Campaign: ${validCampaign}`,
       updated_at: new Date().toISOString()
     }).eq('id', motion.task_id);
   }
 
   await addAuditLog('motion_tasks', motionTaskId, 'UPDATE', userId, motion, motionUpdates);
+  localStore.editStandaloneMotionTask(motionTaskId, { ...input, campaign_type: validCampaign }, userId);
 }
 
 export async function assignOperatorToMotionTask(motionTaskId: string, operatorId: string, userId: string): Promise<void> {
-  if (!supabase) return;
-  const { data: motion } = await supabase.from('motion_tasks').select('*').eq('id', motionTaskId).single();
-  if (!motion) return;
-
   const validOperatorId = operatorId && operatorId.trim() !== '' ? operatorId : null;
 
-  await supabase.from('motion_tasks').update({
-    status_motion: 'COMPLETED',
-    updated_at: new Date().toISOString()
-  }).eq('id', motionTaskId);
+  if (supabase) {
+    const { data: motion } = await supabase.from('motion_tasks').select('*').eq('id', motionTaskId).single();
+    if (motion) {
+      await supabase.from('motion_tasks').update({
+        status_motion: 'COMPLETED',
+        updated_at: new Date().toISOString()
+      }).eq('id', motionTaskId);
 
-  if (motion.task_id) {
-    await supabase.from('tasks').update({
-      operator_id: validOperatorId,
-      updated_at: new Date().toISOString()
-    }).eq('id', motion.task_id);
+      if (motion.task_id) {
+        await supabase.from('tasks').update({
+          operator_id: validOperatorId,
+          updated_at: new Date().toISOString()
+        }).eq('id', motion.task_id);
+      }
+
+      await addAuditLog('motion_tasks', motionTaskId, 'STATUS_TRANSITION', userId, { status: motion.status_motion }, { status: 'COMPLETED', operator_id: validOperatorId });
+    }
   }
 
-  await addAuditLog('motion_tasks', motionTaskId, 'STATUS_TRANSITION', userId, { status: motion.status_motion }, { status: 'COMPLETED', operator_id: validOperatorId });
+  localStore.assignOperatorToMotionTask(motionTaskId, operatorId, userId);
+  invalidateStoreCache('motion_tasks');
+  invalidateStoreCache('tasks_with_relations');
+  invalidateStoreCache('tasks');
 }
 
 export async function assignMotionPic(motionTaskId: string, motionPicId: string, userId?: string, difficulty?: MotionDifficulty): Promise<void> {
@@ -2349,12 +3884,41 @@ export async function updateMotionStatus(motionTaskId: string, status: MotionSta
     status_motion: status,
     updated_at: new Date().toISOString()
   };
+  if ((status === 'APPROVED' || status === 'COMPLETED') && !currentMotion?.approved_at) {
+    updatePayload.approved_at = new Date().toISOString();
+  }
 
-  const { error } = await supabase.from('motion_tasks').update(updatePayload).eq('id', motionTaskId);
-  if (error) throw error;
+  let updateErr: any = null;
+  try {
+    const { error } = await supabase.from('motion_tasks').update(updatePayload).eq('id', motionTaskId);
+    updateErr = error;
+  } catch (err: any) {
+    updateErr = err;
+  }
+
+  if (updateErr && (updateErr.code === 'PGRST204' || updateErr.message?.includes('approved_at') || updateErr.message?.includes('column') || updateErr.details?.includes('column'))) {
+    const { approved_at, ...safePayload } = updatePayload;
+    const { error: fbErr } = await supabase.from('motion_tasks').update(safePayload).eq('id', motionTaskId);
+    if (fbErr) {
+      console.error('Supabase updateMotionStatus fallback error:', fbErr);
+      throw new Error(fbErr.message || fbErr.details || 'Gagal mengubah status motion');
+    }
+  } else if (updateErr) {
+    console.error('Supabase updateMotionStatus error:', updateErr);
+    throw new Error(updateErr.message || updateErr.details || 'Gagal mengubah status motion');
+  }
+
+  try {
+    localStore.updateMotionStatus(motionTaskId, status, userId);
+  } catch {}
+
+  invalidateStoreCache('motion_tasks');
+  invalidateStoreCache('tasks_with_relations');
 
   if (userId) {
-    await addAuditLog('motion_tasks', motionTaskId, 'STATUS_TRANSITION', userId, { status: oldStatus }, { status });
+    try {
+      await addAuditLog('motion_tasks', motionTaskId, 'STATUS_TRANSITION', userId, { status: oldStatus }, { status });
+    } catch {}
   }
 
   let taskForNotif: any = currentMotion;
@@ -2373,7 +3937,42 @@ export async function updateMotionStatus(motionTaskId: string, status: MotionSta
     } catch {}
   }
 
-  await dispatchStatusUpdateNotifications(taskForNotif, oldStatus, status, userId, performerName, true);
+  try {
+    await dispatchStatusUpdateNotifications(taskForNotif, oldStatus, status, userId, performerName, true);
+  } catch (notifErr) {
+    console.warn('dispatchStatusUpdateNotifications warning:', notifErr);
+  }
+}
+
+export async function updateMotionDueDate(motionTaskId: string, dueDate: string, userId?: string): Promise<void> {
+  const currentUserId = userId || 'system';
+  if (!supabase) {
+    localStore.updateMotionDueDate(motionTaskId, dueDate, currentUserId);
+    return;
+  }
+  const isoDate = dueDate.includes('T') ? dueDate : `${dueDate}T00:00:00Z`;
+  const { data: currentMotion } = await supabase.from('motion_tasks').select('*').eq('id', motionTaskId).single();
+  if (!currentMotion) return;
+
+  const { error } = await supabase.from('motion_tasks').update({
+    due_date: isoDate,
+    updated_at: new Date().toISOString()
+  }).eq('id', motionTaskId);
+
+  if (error) {
+    console.error('Supabase updateMotionDueDate error:', error);
+    throw new Error(error.message || 'Gagal mengubah due date motion task');
+  }
+
+  if (currentMotion.task_id) {
+    await supabase.from('tasks').update({
+      due_date: isoDate,
+      updated_at: new Date().toISOString()
+    }).eq('id', currentMotion.task_id);
+  }
+
+  await addAuditLog('motion_tasks', motionTaskId, 'UPDATE', currentUserId, currentMotion, { due_date: isoDate });
+  localStore.updateMotionDueDate(motionTaskId, dueDate, currentUserId);
 }
 
 export async function submitMotionTask(motionTaskId: string, link: string, notes?: string, userId?: string): Promise<void> {
@@ -2429,10 +4028,26 @@ export async function requestMotionRevision(
   const { data: mt } = await supabase.from('motion_tasks').select('*').eq('id', motionTaskId).single();
   const nextRevCount = (mt?.motion_revision_count || 0) + 1;
 
+  const assetLink = mt?.final_video_link || mt?.link_motion || null;
+  const assetName = 'Motion Render Output';
+  const submittedBy = mt?.motion_pic_id || null;
+  const submittedAt = mt?.submission_date || mt?.updated_at || null;
+
+  const snapshotMeta = assetLink ? {
+    asset_name: assetName,
+    asset_link: assetLink,
+    submitted_by: submittedBy,
+    submitted_at: submittedAt
+  } : null;
+
+  const revisionNotesWithSnapshot = snapshotMeta 
+    ? `[${input.reason_category}] ${input.notes}\n<!--CMOMS_REVISION_ASSET:${JSON.stringify(snapshotMeta)}-->`
+    : `[${input.reason_category}] ${input.notes}`;
+
   const { error: revErr } = await supabase.from('task_revisions').insert([{
     task_id: mt?.task_id || motionTaskId,
     stage: 'MOTION',
-    revision_notes: `[${input.reason_category}] ${input.notes}`,
+    revision_notes: revisionNotesWithSnapshot,
     requested_by: requestedBy,
     status: 'PENDING'
   }]);
@@ -2471,18 +4086,352 @@ export async function requestMotionRevision(
 }
 
 export async function deleteMotionTask(motionTaskId: string, userId?: string): Promise<void> {
-  localStore.deleteMotionTask(motionTaskId);
+  try {
+    localStore.deleteMotionTask(motionTaskId);
+  } catch (err) {
+    console.warn('localStore.deleteMotionTask non-fatal:', err);
+  }
+
   if (supabase) {
-    const { error } = await supabase.from('motion_tasks').delete().eq('id', motionTaskId);
-    if (error) {
-      console.warn('Supabase deleteMotionTask error:', error);
-      throw new Error(error.message || error.details || 'Gagal menghapus motion task');
+    try {
+      try {
+        await supabase.from('task_comments').delete().eq('task_id', motionTaskId);
+      } catch {}
+      try {
+        await supabase.from('notifications').delete().or(`request_id.eq.${motionTaskId},task_id.eq.${motionTaskId}`);
+      } catch {}
+
+      const { error } = await supabase.from('motion_tasks').delete().eq('id', motionTaskId);
+      if (error) {
+        console.warn('Supabase deleteMotionTask error:', error);
+        throw new Error(error.message || error.details || 'Gagal menghapus motion task');
+      }
+    } catch (err) {
+      console.error('Error in deleteMotionTask:', err);
+      throw err;
     }
   }
   invalidateStoreCache('motion_tasks');
   invalidateStoreCache('tasks_with_relations');
 }
 
+export async function autoArchiveCompletedTasks(referenceDate?: Date): Promise<{
+  archivedTasks: string[];
+  archivedMotionTasks: string[];
+}> {
+  const result = localStore.autoArchiveCompletedTasks(referenceDate);
+  if (supabase) {
+    if (result.archivedTasks.length > 0) {
+      await supabase.from('tasks').update({
+        is_archived: true,
+        archived_at: new Date().toISOString(),
+        archived_by: 'system',
+        archive_reason: 'Monthly auto-archive of completed tasks'
+      }).in('id', result.archivedTasks);
+    }
+    if (result.archivedMotionTasks.length > 0) {
+      await supabase.from('motion_tasks').update({
+        is_archived: true,
+        archived_at: new Date().toISOString(),
+        archived_by: 'system',
+        archive_reason: 'Monthly auto-archive of completed motion tasks'
+      }).in('id', result.archivedMotionTasks);
+    }
+  }
+  invalidateStoreCache('tasks');
+  invalidateStoreCache('motion_tasks');
+  invalidateStoreCache('tasks_with_relations');
+  return result;
+}
 
+export async function restoreTask(taskId: string, userId: string, userOverride?: User): Promise<{
+  success: boolean;
+  message: string;
+  task?: any;
+}> {
+  let user = userOverride || localStore.getUserById(userId);
+  if (!user && supabase) {
+    try {
+      const { data: dbUser } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
+      if (dbUser) {
+        user = dbUser as User;
+        const users = localStore.getUsers();
+        if (!users.some(u => u.id === dbUser.id)) {
+          users.push(dbUser as User);
+          localStore.setStore(localStore.STORE_KEYS.users, users);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not fetch user from Supabase for restoreTask:', err);
+    }
+  }
 
+  const result = localStore.restoreTask(taskId, userId, user);
+  if (result.success && supabase) {
+    await supabase.from('tasks').update({
+      is_archived: false,
+      restored_at: new Date().toISOString(),
+      restored_by: userId
+    }).eq('id', taskId);
+  }
+  invalidateStoreCache('tasks');
+  invalidateStoreCache('tasks_with_relations');
+  return result;
+}
+
+export async function restoreMotionTask(motionTaskId: string, userId: string, userOverride?: User): Promise<{
+  success: boolean;
+  message: string;
+  motionTask?: any;
+}> {
+  let user = userOverride || localStore.getUserById(userId);
+  if (!user && supabase) {
+    try {
+      const { data: dbUser } = await supabase.from('users').select('*').eq('id', userId).maybeSingle();
+      if (dbUser) {
+        user = dbUser as User;
+        const users = localStore.getUsers();
+        if (!users.some(u => u.id === dbUser.id)) {
+          users.push(dbUser as User);
+          localStore.setStore(localStore.STORE_KEYS.users, users);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not fetch user from Supabase for restoreMotionTask:', err);
+    }
+  }
+
+  const result = localStore.restoreMotionTask(motionTaskId, userId, user);
+  if (result.success && supabase) {
+    await supabase.from('motion_tasks').update({
+      is_archived: false,
+      restored_at: new Date().toISOString(),
+      restored_by: userId
+    }).eq('id', motionTaskId);
+  }
+  invalidateStoreCache('motion_tasks');
+  invalidateStoreCache('tasks_with_relations');
+  return result;
+}
+
+// ============================================================
+// TASK ATTACHMENTS MANAGEMENT (ASYNC)
+// ============================================================
+
+export async function getTaskAttachments(taskId: string): Promise<TaskAttachment[]> {
+  if (supabase) {
+    try {
+      const { data: task } = await supabase.from('tasks').select('id, notes, attachments').eq('id', taskId).single();
+      if (task) {
+        if (Array.isArray(task.attachments) && task.attachments.length > 0) return task.attachments;
+        if (task.notes && task.notes.includes('[ATTACHMENTS:')) {
+          const m = task.notes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+          if (m) {
+            const parsed = safeJsonParse<TaskAttachment[]>(m[1], []);
+            if (parsed.length > 0) return parsed;
+          }
+        }
+      } else {
+        const { data: motion } = await supabase.from('motion_tasks').select('id, notes').eq('id', taskId).single();
+        if (motion && motion.notes && motion.notes.includes('[ATTACHMENTS:')) {
+          const m = motion.notes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+          if (m) {
+            const parsed = safeJsonParse<TaskAttachment[]>(m[1], []);
+            if (parsed.length > 0) return parsed;
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('Supabase getTaskAttachments error, falling back to localStore:', err);
+    }
+  }
+  return localStore.getTaskAttachments(taskId);
+}
+
+export async function addTaskAttachment(taskId: string, attachment: TaskAttachment): Promise<CreativeTask | MotionTask | null> {
+  const result = localStore.addTaskAttachment(taskId, attachment);
+
+  if (supabase) {
+    try {
+      const { data: currentTask } = await supabase.from('tasks').select('id, notes').eq('id', taskId).single();
+      if (currentTask) {
+        let currentAttachments: TaskAttachment[] = [];
+        if (currentTask.notes && currentTask.notes.includes('[ATTACHMENTS:')) {
+          const match = currentTask.notes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+          if (match) currentAttachments = safeJsonParse<TaskAttachment[]>(match[1], []);
+        }
+        if (currentAttachments.length === 0) {
+          currentAttachments = localStore.getTaskAttachments(taskId).filter(a => a.id !== attachment.id);
+        }
+        const updated = [...currentAttachments.filter(a => a.id !== attachment.id), attachment];
+        const updatedNotes = packAttachmentsIntoNotes(currentTask.notes, updated);
+        
+        await supabase.from('tasks').update({
+          notes: updatedNotes,
+          updated_at: new Date().toISOString()
+        }).eq('id', taskId);
+      } else {
+        const { data: currentMotion } = await supabase.from('motion_tasks').select('id, notes').eq('id', taskId).single();
+        if (currentMotion) {
+          let currentAttachments: TaskAttachment[] = [];
+          if (currentMotion.notes && currentMotion.notes.includes('[ATTACHMENTS:')) {
+            const match = currentMotion.notes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+            if (match) currentAttachments = safeJsonParse<TaskAttachment[]>(match[1], []);
+          }
+          if (currentAttachments.length === 0) {
+            currentAttachments = localStore.getTaskAttachments(taskId).filter(a => a.id !== attachment.id);
+          }
+          const updated = [...currentAttachments.filter(a => a.id !== attachment.id), attachment];
+          const updatedNotes = packAttachmentsIntoNotes(currentMotion.notes, updated);
+          await supabase.from('motion_tasks').update({
+            notes: updatedNotes,
+            updated_at: new Date().toISOString()
+          }).eq('id', taskId);
+        }
+      }
+    } catch (err) {
+      console.warn('Supabase addTaskAttachment async error:', err);
+    }
+  }
+
+  invalidateStoreCache('tasks');
+  invalidateStoreCache('tasks_with_relations');
+  invalidateStoreCache('motion_tasks');
+  return result;
+}
+
+export async function removeTaskAttachment(taskId: string, attachmentId: string): Promise<CreativeTask | MotionTask | null> {
+  const result = localStore.removeTaskAttachment(taskId, attachmentId);
+
+  if (supabase) {
+    try {
+      const { data: currentTask } = await supabase.from('tasks').select('id, notes').eq('id', taskId).single();
+      if (currentTask) {
+        let currentAttachments: TaskAttachment[] = [];
+        if (currentTask.notes && currentTask.notes.includes('[ATTACHMENTS:')) {
+          const match = currentTask.notes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+          if (match) currentAttachments = safeJsonParse<TaskAttachment[]>(match[1], []);
+        }
+        if (currentAttachments.length === 0) {
+          currentAttachments = localStore.getTaskAttachments(taskId);
+        }
+        const updated = currentAttachments.filter(a => a.id !== attachmentId);
+        const updatedNotes = packAttachmentsIntoNotes(currentTask.notes, updated);
+        await supabase.from('tasks').update({
+          notes: updatedNotes,
+          updated_at: new Date().toISOString()
+        }).eq('id', taskId);
+      } else {
+        const { data: currentMotion } = await supabase.from('motion_tasks').select('id, notes').eq('id', taskId).single();
+        if (currentMotion) {
+          let currentAttachments: TaskAttachment[] = [];
+          if (currentMotion.notes && currentMotion.notes.includes('[ATTACHMENTS:')) {
+            const match = currentMotion.notes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+            if (match) currentAttachments = safeJsonParse<TaskAttachment[]>(match[1], []);
+          }
+          if (currentAttachments.length === 0) {
+            currentAttachments = localStore.getTaskAttachments(taskId);
+          }
+          const updated = currentAttachments.filter(a => a.id !== attachmentId);
+          const updatedNotes = packAttachmentsIntoNotes(currentMotion.notes, updated);
+          await supabase.from('motion_tasks').update({
+            notes: updatedNotes,
+            updated_at: new Date().toISOString()
+          }).eq('id', taskId);
+        }
+      }
+    } catch (err) {
+      console.warn('Supabase removeTaskAttachment async error:', err);
+    }
+  }
+
+  invalidateStoreCache('tasks');
+  invalidateStoreCache('tasks_with_relations');
+  invalidateStoreCache('motion_tasks');
+  return result;
+}
+
+// ------------------------------------------------------------
+// WEEKLY ISSUES & CHALLENGES REPORTING
+// ------------------------------------------------------------
+
+export async function getWeeklyIssues(year?: number, month?: number): Promise<WeeklyIssue[]> {
+  if (supabase) {
+    try {
+      let query = supabase.from('weekly_issues').select('*').order('created_at', { ascending: false });
+      if (year) query = query.eq('year', year);
+      if (month) query = query.eq('month', month);
+
+      const { data, error } = await query;
+      if (!error && Array.isArray(data) && data.length > 0) {
+        return data as WeeklyIssue[];
+      }
+    } catch (err) {
+      console.warn('Supabase getWeeklyIssues fallback to localStore:', err);
+    }
+  }
+
+  return localStore.getWeeklyIssues(year, month);
+}
+
+export async function createWeeklyIssue(input: CreateWeeklyIssueInput, userId?: string): Promise<WeeklyIssue> {
+  const localResult = localStore.createWeeklyIssue(input, userId);
+
+  if (supabase) {
+    try {
+      await supabase.from('weekly_issues').insert([{
+        id: localResult.id,
+        year: localResult.year,
+        month: localResult.month,
+        week: localResult.week,
+        title: localResult.title,
+        category: localResult.category,
+        severity: localResult.severity,
+        status: localResult.status,
+        description: localResult.description,
+        affected_pipeline: localResult.affected_pipeline,
+        related_task_code: localResult.related_task_code,
+        reported_by: localResult.reported_by,
+        reported_by_name: localResult.reported_by_name,
+        created_at: localResult.created_at,
+        updated_at: localResult.updated_at
+      }]);
+    } catch (err) {
+      console.warn('Supabase createWeeklyIssue async error:', err);
+    }
+  }
+
+  return localResult;
+}
+
+export async function updateWeeklyIssue(id: string, updates: Partial<WeeklyIssue>): Promise<WeeklyIssue | null> {
+  const localResult = localStore.updateWeeklyIssue(id, updates);
+
+  if (supabase) {
+    try {
+      await supabase.from('weekly_issues').update({
+        ...updates,
+        updated_at: new Date().toISOString()
+      }).eq('id', id);
+    } catch (err) {
+      console.warn('Supabase updateWeeklyIssue async error:', err);
+    }
+  }
+
+  return localResult;
+}
+
+export async function deleteWeeklyIssue(id: string): Promise<boolean> {
+  const localResult = localStore.deleteWeeklyIssue(id);
+
+  if (supabase) {
+    try {
+      await supabase.from('weekly_issues').delete().eq('id', id);
+    } catch (err) {
+      console.warn('Supabase deleteWeeklyIssue async error:', err);
+    }
+  }
+
+  return localResult;
+}
 

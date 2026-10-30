@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { markCommentsAsRead, getAllTasksWithRelations } from '@/lib/supabase-store';
+import { resolveAuthenticatedUser } from '@/lib/server-auth';
+import { canUserAccessTaskChat } from '@/lib/chat-auth';
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -7,18 +9,18 @@ interface RouteContext {
 
 /**
  * POST /api/requests/[id]/messages/read
- * Marks messages of a request as read for the specified user.
+ * Marks messages of a request as read for the authenticated user.
  */
 export async function POST(req: Request, context: RouteContext) {
   try {
     const { id: taskId } = await context.params;
     const body = await req.json().catch(() => null);
-    const userId = body?.user_id || req.headers.get('x-user-id');
 
-    if (!userId) {
+    const user = await resolveAuthenticatedUser(req);
+    if (!user) {
       return NextResponse.json(
-        { success: false, message: 'User ID wajib disertakan' },
-        { status: 400 }
+        { success: false, message: 'Autentikasi diperlukan' },
+        { status: 401 }
       );
     }
 
@@ -31,7 +33,14 @@ export async function POST(req: Request, context: RouteContext) {
       );
     }
 
-    await markCommentsAsRead(task.id, userId);
+    if (!canUserAccessTaskChat(task, user)) {
+      return NextResponse.json(
+        { success: false, message: 'Akses ditolak: Anda bukan partisipan pada request ini' },
+        { status: 403 }
+      );
+    }
+
+    await markCommentsAsRead(task.id, user.id);
 
     return NextResponse.json({
       success: true,

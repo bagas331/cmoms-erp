@@ -4,44 +4,15 @@ import {
   addComment, 
   editComment, 
   deleteComment, 
-  getAllTasksWithRelations, 
-  getUsers 
+  getAllTasksWithRelations 
 } from '@/lib/supabase-store';
 import { checkRateLimit } from '@/lib/rate-limiter';
 import { canUserAccessTaskChat, canUserEditComment, canUserDeleteComment } from '@/lib/chat-auth';
 import { sanitizeChatMessage, validateChatAttachment } from '@/lib/utils';
+import { resolveAuthenticatedUser } from '@/lib/server-auth';
 
 interface RouteContext {
   params: Promise<{ id: string }>;
-}
-
-/**
- * Helper to resolve user from request headers or body.
- * In production ERP with JWT/cookie/header auth.
- */
-async function resolveUser(req: Request) {
-  const userIdHeader = req.headers.get('x-user-id');
-  const userRoleHeader = req.headers.get('x-user-role');
-  const userNameHeader = req.headers.get('x-user-name');
-
-  if (userIdHeader) {
-    return {
-      id: userIdHeader,
-      role_name: userRoleHeader || 'MEMBER',
-      full_name: userNameHeader || 'User'
-    };
-  }
-
-  // Fallback to checking all registered users if matched in header or query
-  const url = new URL(req.url);
-  const queryUserId = url.searchParams.get('userId');
-  if (queryUserId) {
-    const allUsers = await getUsers();
-    const matched = allUsers.find(u => u.id === queryUserId);
-    if (matched) return matched;
-  }
-
-  return null;
 }
 
 /**
@@ -51,6 +22,14 @@ async function resolveUser(req: Request) {
  */
 export async function GET(req: Request, context: RouteContext) {
   try {
+    const user = await resolveAuthenticatedUser(req);
+    if (!user) {
+      return NextResponse.json(
+        { success: false, message: 'Autentikasi diperlukan untuk mengakses pesan' },
+        { status: 401 }
+      );
+    }
+
     const { id: taskId } = await context.params;
     const url = new URL(req.url);
     const limitParam = parseInt(url.searchParams.get('limit') || '50', 10);
@@ -63,14 +42,6 @@ export async function GET(req: Request, context: RouteContext) {
       return NextResponse.json(
         { success: false, message: 'Request tidak ditemukan' },
         { status: 404 }
-      );
-    }
-
-    const user = await resolveUser(req);
-    if (!user) {
-      return NextResponse.json(
-        { success: false, message: 'Autentikasi diperlukan untuk mengakses pesan' },
-        { status: 401 }
       );
     }
 
@@ -125,16 +96,16 @@ export async function POST(req: Request, context: RouteContext) {
       );
     }
 
-    const userId = body.user_id || req.headers.get('x-user-id');
-    if (!userId) {
+    const user = await resolveAuthenticatedUser(req);
+    if (!user) {
       return NextResponse.json(
-        { success: false, message: 'User ID wajib disertakan' },
+        { success: false, message: 'Autentikasi diperlukan untuk mengirim pesan' },
         { status: 401 }
       );
     }
 
     // 1. Rate limiting check
-    const rateLimit = checkRateLimit(`api_chat_${userId}`, 10, 10000);
+    const rateLimit = checkRateLimit(`api_chat_${user.id}`, 10, 10000);
     if (!rateLimit.allowed) {
       return NextResponse.json(
         { 
@@ -157,14 +128,6 @@ export async function POST(req: Request, context: RouteContext) {
     }
 
     // 3. User & Authorization check
-    const allUsers = await getUsers();
-    const user = allUsers.find(u => u.id === userId) || {
-      id: userId,
-      full_name: body.user_name || 'User',
-      role_name: body.user_role || 'REQUESTER',
-      avatar_initials: (body.user_name || 'U').slice(0, 2).toUpperCase()
-    };
-
     const hasAccess = canUserAccessTaskChat(task, user);
     if (!hasAccess) {
       return NextResponse.json(
@@ -243,14 +206,22 @@ export async function POST(req: Request, context: RouteContext) {
 export async function PATCH(req: Request, context: RouteContext) {
   try {
     const body = await req.json().catch(() => null);
-    if (!body || !body.comment_id || !body.user_id || typeof body.content !== 'string') {
+    if (!body || !body.comment_id || typeof body.content !== 'string') {
       return NextResponse.json(
         { success: false, message: 'Format permintaan tidak valid' },
         { status: 400 }
       );
     }
 
-    const updated = await editComment(body.comment_id, body.user_id, body.content);
+    const user = await resolveAuthenticatedUser(req);
+    if (!user) {
+      return NextResponse.json(
+        { success: false, message: 'Autentikasi diperlukan untuk mengedit pesan' },
+        { status: 401 }
+      );
+    }
+
+    const updated = await editComment(body.comment_id, user.id, body.content);
     return NextResponse.json({
       success: true,
       message: 'Pesan berhasil diperbarui',
@@ -273,8 +244,6 @@ export async function DELETE(req: Request, context: RouteContext) {
   try {
     const url = new URL(req.url);
     const commentId = url.searchParams.get('commentId');
-    const userId = url.searchParams.get('userId') || req.headers.get('x-user-id');
-    const roleName = url.searchParams.get('roleName') || req.headers.get('x-user-role');
 
     if (!commentId) {
       return NextResponse.json(
@@ -283,7 +252,15 @@ export async function DELETE(req: Request, context: RouteContext) {
       );
     }
 
-    await deleteComment(commentId, userId || undefined, roleName || undefined);
+    const user = await resolveAuthenticatedUser(req);
+    if (!user) {
+      return NextResponse.json(
+        { success: false, message: 'Autentikasi diperlukan untuk menghapus pesan' },
+        { status: 401 }
+      );
+    }
+
+    await deleteComment(commentId, user.id, user.role_name);
     return NextResponse.json({
       success: true,
       message: 'Pesan berhasil dihapus'

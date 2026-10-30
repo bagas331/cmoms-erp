@@ -13,7 +13,8 @@ import {
   editComment, 
   deleteComment, 
   markCommentsAsRead,
-  unpackCommentData
+  unpackCommentData,
+  getAuditLogs
 } from '@/lib/supabase-store';
 import * as localStore from '@/lib/store';
 import { 
@@ -28,6 +29,7 @@ import {
   formatDisplayDateTime,
   formatChatTime,
   formatChatDateDivider,
+  formatRelativeTime,
   MAX_ATTACHMENT_SIZE_BYTES
 } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
@@ -49,7 +51,10 @@ import {
   Clock,
   Film,
   CheckCheck,
-  Info
+  Info,
+  AtSign,
+  ArrowRightLeft,
+  Bold
 } from 'lucide-react';
 
 interface TaskChatSectionProps {
@@ -57,13 +62,15 @@ interface TaskChatSectionProps {
   user: UserType;
   isActiveTab?: boolean;
   onCommentsUpdated?: (count: number, unreadCount: number) => void;
+  embedded?: boolean;
 }
 
 export function TaskChatSection({
   task,
   user,
   isActiveTab = true,
-  onCommentsUpdated
+  onCommentsUpdated,
+  embedded = false
 }: TaskChatSectionProps) {
   const taskId = task?.id;
 
@@ -90,6 +97,10 @@ export function TaskChatSection({
   });
 
   const [chatError, setChatError] = useState<string | null>(null);
+
+  // Activity vs Comments Tab Filter (matching screen.png)
+  const [activityFilter, setActivityFilter] = useState<'all' | 'comments'>('all');
+  const [auditLogs, setAuditLogs] = useState<any[]>([]);
 
   // Form input states
   const [commentText, setCommentText] = useState('');
@@ -124,8 +135,80 @@ export function TaskChatSection({
   const [displayLimit, setDisplayLimit] = useState(50);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const isInitialLoadRef = useRef(true);
+
+  // Load audit logs for unified Activity timeline (matching screen.png)
+  useEffect(() => {
+    let isMounted = true;
+    async function loadLogs() {
+      try {
+        const logs = await getAuditLogs();
+        if (isMounted) {
+          const matched = (logs || []).filter(l => 
+            l.entity_id === taskId || 
+            l.entity_id === task?.task_code || 
+            (task?.task_code && l.entity_id?.includes(task.task_code)) ||
+            (task?.motion_task?.id && l.entity_id === task.motion_task.id) ||
+            (task?.id && l.entity_id === task.id)
+          );
+          setAuditLogs(matched);
+        }
+      } catch (err) {
+        console.warn('Failed to load audit logs for chat section:', err);
+      }
+    }
+    loadLogs();
+    return () => { isMounted = false; };
+  }, [taskId, task?.task_code, task?.motion_task?.id, task?.id]);
+
+  // Toolbar action helpers
+  const handleInsertBold = () => {
+    const el = textareaRef.current;
+    if (!el) {
+      setCommentText(prev => prev + ' **teks** ');
+      return;
+    }
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const sel = commentText.substring(start, end);
+    const replacement = sel ? `**${sel}**` : '**teks**';
+    const next = commentText.substring(0, start) + replacement + commentText.substring(end);
+    setCommentText(next);
+    setTimeout(() => {
+      el.focus();
+      el.setSelectionRange(start + 2, start + replacement.length - 2);
+    }, 0);
+  };
+
+  const handleInsertMention = () => {
+    const el = textareaRef.current;
+    setCommentText(prev => prev + '@');
+    setTimeout(() => el?.focus(), 0);
+  };
+
+  const formatAuditDescription = (action: string, beforeState: any, afterState: any) => {
+    switch (action) {
+      case 'STATUS_TRANSITION': {
+        const before = beforeState?.status || beforeState?.status_design || beforeState?.status_motion || '';
+        const after = afterState?.status || afterState?.status_design || afterState?.status_motion || '';
+        if (before && after) return `moved task from ${before} to ${after}`;
+        if (after) return `changed status to ${after}`;
+        return 'updated task status';
+      }
+      case 'ASSIGN': {
+        const pic = afterState?.design_pic || afterState?.strat_pic || afterState?.motion_pic || '';
+        return pic ? `assigned task to ${pic}` : 'assigned task PIC';
+      }
+      case 'SUBMIT': return 'submitted output deliverables for review';
+      case 'APPROVE': return 'approved task deliverables';
+      case 'REVISION_REQUEST': return 'requested task revision';
+      case 'CREATE': return 'created task request brief';
+      case 'AUTO_ARCHIVE': return 'archived task';
+      default: return `performed ${action.toLowerCase()}`;
+    }
+  };
 
   // Role style badges
   const getRoleStyle = (roleName?: string) => {
@@ -468,43 +551,89 @@ export function TaskChatSection({
   const visibleComments = comments.slice(-displayLimit);
   const hasMoreComments = comments.length > displayLimit;
 
+  // Unified stream combining comments and audit activity events (matching screen.png)
+  type StreamItem = 
+    | { type: 'comment'; id: string; data: TaskComment; timestamp: string }
+    | { type: 'activity'; id: string; data: any; timestamp: string };
+
+  const unifiedStream = useMemo<StreamItem[]>(() => {
+    const commentItems: StreamItem[] = visibleComments.map(c => ({
+      type: 'comment',
+      id: `cmt-${c.id}`,
+      data: c,
+      timestamp: c.created_at
+    }));
+
+    if (activityFilter === 'comments') {
+      return commentItems;
+    }
+
+    const activityItems: StreamItem[] = auditLogs.map((log, idx) => ({
+      type: 'activity',
+      id: `act-${log.id || idx}-${log.timestamp || log.created_at}`,
+      data: log,
+      timestamp: log.timestamp || log.created_at || new Date().toISOString()
+    }));
+
+    const combined = [...commentItems, ...activityItems];
+    combined.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    return combined;
+  }, [visibleComments, auditLogs, activityFilter]);
+
   return (
-    <div className="flex flex-col space-y-3 rounded-xl border border-[var(--border-primary)] bg-[var(--bg-secondary)] p-4 h-full min-h-[440px]">
+    <div className={`flex flex-col h-full min-h-0 overflow-hidden ${
+      embedded 
+        ? 'bg-transparent' 
+        : 'rounded-xl border border-[var(--border-primary)] bg-[var(--bg-secondary)] p-4 min-h-[440px] space-y-3'
+    }`}>
       
-      {/* Header Info Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-[var(--border-secondary)]">
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="w-7 h-7 rounded-lg bg-blue-500/10 text-blue-500 flex items-center justify-center font-bold">
-            <MessageSquare className="w-4 h-4" />
+      {/* Header Info Bar matching screen.png */}
+      <div className={`flex items-center justify-between gap-2.5 shrink-0 ${
+        embedded 
+          ? 'px-4 py-2 border-b border-[var(--border-primary)] bg-[var(--bg-secondary)]' 
+          : 'pb-2 border-b border-[var(--border-secondary)]'
+      }`}>
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-6 h-6 rounded-md bg-blue-500/10 text-blue-500 flex items-center justify-center font-bold shrink-0">
+            <MessageSquare className="w-3.5 h-3.5" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--text-primary)] m-0">
-                Kolom Chat &amp; Diskusi Tim
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-[var(--text-primary)] m-0 truncate">
+                Comments &amp; Activity
               </h3>
-              <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
-                {comments.length} Pesan
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full font-bold bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300 shrink-0">
+                {comments.length}
               </span>
             </div>
-            <p className="text-[11px] text-[var(--text-muted)] m-0 flex items-center gap-1.5 flex-wrap">
-              <span>Peserta: AE ({task.created_by_name || 'AE'})</span>
-              {task.design_pic_name && <span>• GD ({task.design_pic_name})</span>}
-              {task.strat_pic_names && task.strat_pic_names.length > 0 ? (
-                <span>• Strategic ({task.strat_pic_names.join(', ')})</span>
-              ) : task.strat_pic_name ? (
-                <span>• Strategic ({task.strat_pic_name})</span>
-              ) : null}
-              {task.motion_pic_name && <span>• Motion ({task.motion_pic_name})</span>}
-            </p>
           </div>
         </div>
 
-        {/* Closed status badge if applicable */}
-        {isTaskClosed && (
-          <span className="text-[11px] px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-500 border border-amber-500/20 font-medium flex items-center gap-1">
-            <Info className="w-3 h-3" /> Status Selesai (Closed)
-          </span>
-        )}
+        {/* Tab pill toggle: All Activity | Comments */}
+        <div className="flex items-center p-0.5 rounded-md bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] text-[10.5px] font-medium shrink-0">
+          <button
+            type="button"
+            onClick={() => setActivityFilter('all')}
+            className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+              activityFilter === 'all'
+                ? 'bg-[var(--bg-card)] text-[var(--text-primary)] font-semibold shadow-xs'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            All Activity
+          </button>
+          <button
+            type="button"
+            onClick={() => setActivityFilter('comments')}
+            className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+              activityFilter === 'comments'
+                ? 'bg-[var(--bg-card)] text-[var(--text-primary)] font-semibold shadow-xs'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            Comments
+          </button>
+        </div>
       </div>
 
       {/* Error & Retry Banner */}
@@ -550,28 +679,49 @@ export function TaskChatSection({
 
       {/* Message List */}
       <div 
-        className="flex-1 overflow-y-auto pr-1 space-y-3.5 custom-scrollbar" 
-        style={{ minHeight: '280px', maxHeight: '440px' }}
+        className={`flex-1 min-h-0 overflow-y-auto space-y-2.5 custom-scrollbar ${
+          embedded ? 'px-4 py-3' : 'pr-1'
+        }`}
+        style={embedded ? undefined : { minHeight: '280px', maxHeight: '440px' }}
       >
         {loading ? (
           <div className="flex flex-col items-center justify-center py-10 text-[var(--text-muted)]">
-            <Loader2 className="w-6 h-6 animate-spin mb-2 text-blue-500" />
+            <Loader2 className="w-5 h-5 animate-spin mb-1.5 text-blue-500" />
             <span className="text-xs">Memuat pesan diskusi...</span>
           </div>
-        ) : comments.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-8 text-center p-6 rounded-xl border border-dashed border-[var(--border-secondary)] bg-[var(--bg-card)]">
-            <div className="w-10 h-10 rounded-full bg-blue-500/10 text-blue-500 flex items-center justify-center mb-2.5">
-              <MessageSquare className="w-5 h-5" />
+        ) : unifiedStream.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-6 text-center p-4 rounded-xl border border-dashed border-[var(--border-secondary)] bg-[var(--bg-card)]">
+            <div className="w-9 h-9 rounded-full bg-blue-500/10 text-blue-500 flex items-center justify-center mb-2">
+              <MessageSquare className="w-4 h-4" />
             </div>
             <h4 className="text-xs font-bold text-[var(--text-primary)] mb-1">Belum Ada Diskusi</h4>
             <p className="text-[11px] text-[var(--text-muted)] max-w-sm m-0">
-              Gunakan kolom chat ini untuk koordinasi, mengirim feedback, melampirkan gambar/video hasil review, atau update pengerjaan tiket pada status apa pun.
+              Gunakan kolom chat ini untuk koordinasi, feedback review, dan update status tiket.
             </p>
           </div>
         ) : (
           (() => {
             let lastDateLabel = '';
-            return visibleComments.map((cmt) => {
+            return unifiedStream.map((item) => {
+              if (item.type === 'activity') {
+                const log = item.data;
+                const desc = formatAuditDescription(log.action, log.before_state, log.after_state);
+                return (
+                  <div key={item.id} className="w-full flex items-center justify-center my-1.5 select-none">
+                    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[var(--bg-card)]/90 border border-[var(--border-secondary)] text-[10.5px] text-[var(--text-secondary)] shadow-xs max-w-[94%]">
+                      <ArrowRightLeft className="w-3 h-3 text-blue-400 shrink-0" />
+                      <span className="truncate">
+                        <strong className="text-[var(--text-primary)] font-semibold">{log.performer_name || 'System'}</strong> {desc}
+                      </span>
+                      <span className="text-[9.5px] text-[var(--text-muted)] shrink-0 font-mono ml-auto">
+                        {formatRelativeTime(log.timestamp || log.created_at)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              }
+
+              const cmt = item.data;
               const isOwnMessage = Boolean(user?.id && (cmt.user_id === user.id || (cmt as any).sender_id === user.id));
               const roleStyle = getRoleStyle(cmt.user_role);
               const senderDisplayName = cmt.user_name || (cmt as any).sender_name || (isOwnMessage ? user.full_name : 'Pengguna');
@@ -589,8 +739,8 @@ export function TaskChatSection({
               return (
                 <React.Fragment key={cmt.id}>
                   {showDateDivider && (
-                    <div className="flex items-center justify-center my-3 select-none">
-                      <span className="px-3 py-0.5 text-[10px] font-semibold tracking-wide rounded-full bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] text-[var(--text-muted)] shadow-xs">
+                    <div className="flex items-center justify-center my-2 select-none">
+                      <span className="px-2.5 py-0.5 text-[9.5px] font-semibold tracking-wide rounded-full bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] text-[var(--text-muted)] shadow-xs">
                         {dateLabel}
                       </span>
                     </div>
@@ -601,12 +751,12 @@ export function TaskChatSection({
                       isOwnMessage 
                         ? 'chat-message-own justify-end' 
                         : 'chat-message-other justify-start'
-                    } items-end gap-2 group mb-2.5`}
+                    } items-end gap-1.5 group mb-2`}
                   >
                     {/* If other user, show Avatar on the left */}
                     {!isOwnMessage && (
                       <div 
-                        className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 mb-1 shadow-xs"
+                        className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold flex-shrink-0 mb-0.5 shadow-xs"
                         style={{ background: roleStyle.bg, color: roleStyle.text, border: `1.5px solid ${roleStyle.border}` }}
                         title={`${senderDisplayName} (${roleStyle.label})`}
                       >
@@ -616,25 +766,25 @@ export function TaskChatSection({
 
                     {/* Action buttons on hover for OWN message (placed on the LEFT of bubble) */}
                     {isOwnMessage && !cmt.is_deleted && !isEditing && (canEdit || canDelete) && (
-                      <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 mb-1 shrink-0">
+                      <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5 mb-0.5 shrink-0">
                         {canEdit && (
                           <button
                             type="button"
                             onClick={() => startEdit(cmt)}
-                            className="text-[var(--text-muted)] hover:text-blue-500 p-1 rounded hover:bg-[var(--bg-tertiary)] transition-colors"
+                            className="text-[var(--text-muted)] hover:text-blue-500 p-0.5 rounded hover:bg-[var(--bg-tertiary)] transition-colors"
                             title="Edit pesan"
                           >
-                            <Edit2 className="w-3.5 h-3.5" />
+                            <Edit2 className="w-3 h-3" />
                           </button>
                         )}
                         {canDelete && (
                           <button
                             type="button"
                             onClick={() => handleDelete(cmt.id)}
-                            className="text-[var(--text-muted)] hover:text-red-500 p-1 rounded hover:bg-[var(--bg-tertiary)] transition-colors"
+                            className="text-[var(--text-muted)] hover:text-red-500 p-0.5 rounded hover:bg-[var(--bg-tertiary)] transition-colors"
                             title="Hapus pesan"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Trash2 className="w-3 h-3" />
                           </button>
                         )}
                       </div>
@@ -642,26 +792,26 @@ export function TaskChatSection({
 
                     {/* Chat Bubble container */}
                     <div 
-                      className={`chat-bubble max-w-[85%] sm:max-w-[75%] md:max-w-[70%] flex flex-col ${
+                      className={`chat-bubble max-w-[88%] sm:max-w-[80%] md:max-w-[75%] flex flex-col ${
                         isOwnMessage ? 'items-end' : 'items-start'
                       }`}
                     >
                       {/* Bubble Card */}
                       <div 
-                        className={`relative px-3.5 py-2.5 shadow-sm text-xs leading-relaxed transition-all ${
+                        className={`relative px-3 py-2 shadow-xs text-xs leading-relaxed transition-all ${
                           cmt.is_deleted
                             ? (isOwnMessage
-                                ? 'bg-blue-900/20 dark:bg-blue-950/40 text-[var(--text-muted)] border border-blue-500/20 rounded-2xl rounded-tr-xs italic'
-                                : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)] border border-[var(--border-secondary)] rounded-2xl rounded-tl-xs italic')
+                                ? 'bg-blue-900/20 dark:bg-blue-950/40 text-[var(--text-muted)] border border-blue-500/20 rounded-xl rounded-tr-xs italic'
+                                : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)] border border-[var(--border-secondary)] rounded-xl rounded-tl-xs italic')
                             : (isOwnMessage
-                                ? 'bg-blue-600 dark:bg-blue-600 text-white rounded-2xl rounded-tr-xs border border-blue-500/30'
-                                : 'bg-[var(--bg-card)] text-[var(--text-primary)] border border-[var(--border-secondary)] rounded-2xl rounded-tl-xs')
+                                ? 'bg-blue-600 dark:bg-blue-600 text-white rounded-xl rounded-tr-xs border border-blue-500/30'
+                                : 'bg-[var(--bg-card)] text-[var(--text-primary)] border border-[var(--border-secondary)] rounded-xl rounded-tl-xs')
                         }`}
                         style={{ wordBreak: 'break-word' }}
                       >
                         {/* Sender Name & Role Header (ONLY for other users' messages) */}
                         {!isOwnMessage && (
-                          <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                          <div className="flex items-center gap-1.5 mb-1 flex-wrap">
                             <span className="text-[11px] font-bold text-[var(--text-primary)]">
                               {senderDisplayName}
                             </span>
@@ -829,36 +979,38 @@ export function TaskChatSection({
 
       {/* Input composer dock */}
       {canPostChat ? (
-        <form onSubmit={onSubmitForm} className="pt-2.5 border-t border-[var(--border-secondary)] space-y-2">
-          <div className="flex items-center justify-between text-[11px] text-[var(--text-secondary)] px-1 font-medium">
-            <span className="flex items-center gap-1.5">
-              <User className="w-3.5 h-3.5 text-blue-500" />
-              Kirim pesan sebagai: <strong className="text-[var(--text-primary)]">{user.full_name}</strong>
-              <span className="text-[9px] px-1.5 py-0.2 rounded font-medium border ml-1" style={{ background: getRoleStyle(user.role_name).bg, color: getRoleStyle(user.role_name).text, borderColor: getRoleStyle(user.role_name).border }}>
+        <form onSubmit={onSubmitForm} className={`border-t border-[var(--border-primary)] shrink-0 space-y-2 ${
+          embedded ? 'p-3 bg-[var(--bg-secondary)]' : 'pt-2'
+        }`}>
+          <div className="flex items-center justify-between text-[10.5px] text-[var(--text-secondary)] px-1 font-medium">
+            <span className="flex items-center gap-1.5 truncate">
+              <User className="w-3 h-3 text-blue-500 shrink-0" />
+              <span className="truncate">Sebagai: <strong className="text-[var(--text-primary)]">{user.full_name}</strong></span>
+              <span className="text-[9px] px-1.5 py-0.2 rounded font-medium border ml-1 shrink-0" style={{ background: getRoleStyle(user.role_name).bg, color: getRoleStyle(user.role_name).text, borderColor: getRoleStyle(user.role_name).border }}>
                 {getRoleStyle(user.role_name).label}
               </span>
             </span>
-            <span className="text-[var(--text-muted)]">Notifikasi otomatis dikirim ke PIC terkait</span>
+            <span className="text-[9.5px] text-[var(--text-muted)] hidden sm:inline shrink-0">Auto-notify PIC</span>
           </div>
 
           {/* Attachment Preview Card */}
           {selectedAttachment && (
-            <div className="p-2.5 rounded-xl bg-[var(--bg-tertiary)] border border-blue-500/30 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3 min-w-0">
+            <div className="p-2 rounded-lg bg-[var(--bg-tertiary)] border border-blue-500/30 flex items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2.5 min-w-0">
                 {selectedAttachment.type === 'image' ? (
-                  <div className="w-12 h-12 rounded-lg overflow-hidden border border-[var(--border-secondary)] shrink-0 bg-black/10">
+                  <div className="w-10 h-10 rounded-md overflow-hidden border border-[var(--border-secondary)] shrink-0 bg-black/10">
                     <img src={selectedAttachment.url} alt="Preview" className="w-full h-full object-cover" />
                   </div>
                 ) : (
-                  <div className="w-12 h-12 rounded-lg bg-pink-500/10 text-pink-500 flex items-center justify-center shrink-0 border border-pink-500/20">
-                    <Film className="w-6 h-6" />
+                  <div className="w-10 h-10 rounded-md bg-pink-500/10 text-pink-500 flex items-center justify-center shrink-0 border border-pink-500/20">
+                    <Film className="w-5 h-5" />
                   </div>
                 )}
                 <div className="min-w-0">
                   <p className="text-xs font-bold text-[var(--text-primary)] truncate m-0">
                     {selectedAttachment.name}
                   </p>
-                  <span className="text-[11px] text-[var(--text-muted)]">
+                  <span className="text-[10px] text-[var(--text-muted)]">
                     {selectedAttachment.type === 'image' ? 'Gambar' : 'Video'} • {formatFileSize(selectedAttachment.size)}
                   </span>
                 </div>
@@ -866,23 +1018,25 @@ export function TaskChatSection({
               <button
                 type="button"
                 onClick={() => setSelectedAttachment(null)}
-                className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                className="p-1 rounded-md text-[var(--text-muted)] hover:text-red-500 hover:bg-red-500/10 transition-colors"
                 title="Hapus lampiran"
               >
-                <X className="w-4 h-4" />
+                <X className="w-3.5 h-3.5" />
               </button>
             </div>
           )}
 
           {isReadingFile && (
-            <div className="p-2.5 rounded-xl bg-blue-500/10 border border-blue-500/20 flex items-center gap-2 text-xs text-blue-500">
-              <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+            <div className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center gap-1.5 text-xs text-blue-500">
+              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
               <span>Memproses media...</span>
             </div>
           )}
 
-          <div className="relative">
+          {/* Enhanced input composer with formatting bar */}
+          <div className="rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-card)] focus-within:ring-2 focus-within:ring-blue-500/30 focus-within:border-blue-500 transition-all overflow-hidden shadow-xs">
             <textarea
+              ref={textareaRef}
               rows={2}
               value={commentText}
               disabled={isSubmitting || isReadingFile}
@@ -894,8 +1048,8 @@ export function TaskChatSection({
                   onSubmitForm();
                 }
               }}
-              placeholder="Tulis pesan atau tempel (paste) gambar/video... (Enter untuk kirim, Shift+Enter untuk baris baru)"
-              className="w-full text-xs p-3 pr-28 rounded-xl border border-[var(--border-secondary)] bg-[var(--bg-card)] text-[var(--text-primary)] focus:outline-none focus:ring-2 focus:ring-blue-500/30 resize-none transition-all disabled:opacity-60"
+              placeholder="Tulis komentar atau sebut rekan tim dengan @..."
+              className="w-full text-xs p-2.5 bg-transparent text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none resize-none transition-all disabled:opacity-60"
             />
 
             {/* Hidden file input with whitelist */}
@@ -907,34 +1061,61 @@ export function TaskChatSection({
               className="hidden" 
             />
 
-            <div className="absolute right-2.5 bottom-3 flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isSubmitting || isReadingFile}
-                className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-blue-500 hover:bg-blue-500/10 transition-colors"
-                title="Lampirkan Gambar atau Video (Maks 25MB)"
-              >
-                <Paperclip className="w-4 h-4" />
-              </button>
+            {/* Bottom Formatting Toolbar */}
+            <div className="px-2 py-1 border-t border-[var(--border-secondary)]/60 bg-[var(--bg-secondary)]/40 flex items-center justify-between">
+              <div className="flex items-center gap-0.5">
+                {/* Bold */}
+                <button
+                  type="button"
+                  onClick={handleInsertBold}
+                  className="w-5 h-5 rounded flex items-center justify-center text-[11px] font-bold text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer"
+                  title="Tebalkan Teks (Bold)"
+                >
+                  B
+                </button>
+                {/* Attachment */}
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isSubmitting || isReadingFile}
+                  className="p-1 rounded text-[var(--text-muted)] hover:text-blue-500 hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer"
+                  title="Lampirkan File / Gambar (Maks 25MB)"
+                >
+                  <Paperclip className="w-3.5 h-3.5" />
+                </button>
+                {/* Mention */}
+                <button
+                  type="button"
+                  onClick={handleInsertMention}
+                  className="p-1 rounded text-[var(--text-muted)] hover:text-blue-500 hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer"
+                  title="Sebut Rekan Tim (@)"
+                >
+                  <AtSign className="w-3.5 h-3.5" />
+                </button>
+              </div>
 
+              {/* Send Button */}
               <button
                 type="submit"
                 disabled={(!commentText.trim() && !selectedAttachment) || isSubmitting || isReadingFile}
-                className="btn-primary py-1.5 px-3.5 text-xs rounded-lg flex items-center gap-1.5 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                className="btn-primary h-7 py-0 px-2.5 text-xs rounded-md flex items-center gap-1 shadow-xs disabled:opacity-40 disabled:cursor-not-allowed font-semibold"
               >
                 {isSubmitting ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <Loader2 className="w-3 h-3 animate-spin" />
                 ) : (
-                  <Send className="w-3.5 h-3.5" />
+                  <Send className="w-3 h-3" />
                 )}
-                Kirim
+                <span>Kirim</span>
               </button>
             </div>
           </div>
         </form>
       ) : (
-        <div className="p-3 text-center rounded-xl bg-[var(--bg-tertiary)] border border-[var(--border-primary)] text-xs text-[var(--text-muted)]">
+        <div className={`text-center text-xs text-[var(--text-muted)] ${
+          embedded 
+            ? 'p-4 border-t border-[var(--border-primary)] bg-[var(--bg-secondary)]/50' 
+            : 'p-3 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--border-primary)]'
+        }`}>
           Anda hanya memiliki akses melihat (read-only) riwayat diskusi pada request ini.
         </div>
       )}

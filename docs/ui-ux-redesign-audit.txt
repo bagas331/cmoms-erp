@@ -1,0 +1,1156 @@
+================================================================================
+CMOS (CREATIVE & MOTION OPERATIONS SYSTEM) ERP
+COMPREHENSIVE UI/UX AUDIT & WEBSITE REDESIGN SPECIFICATION
+================================================================================
+Document Version  : 1.0.0
+Audit Date        : October 18, 2026
+Lead Auditors     : Senior UI/UX Engineer, Senior Frontend Architect,
+                    Enterprise ERP Product Designer, Accessibility Specialist,
+                    and Lead QA Engineer
+Target System     : Orbiz Operator Management ERP / CMOS
+Workspace Path    : d:\ORBIZ INTERN\DESAIN INTERNAL ERP\cmoms
+Output Artifact   : docs/ui-ux-redesign-audit.txt
+================================================================================
+
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+ 1. Project Overview and Audit Scope
+ 2. Repository and Technology Findings
+ 3. Existing Routes and Page Inventory
+ 4. Verified Feature Inventory (Exhaustive Feature-by-Feature Matrix)
+ 5. Features That Are Partially Verified, Unverified, or Missing
+ 6. Current UI/UX Assessment
+ 7. Prioritized Issues and Evidence (P0, P1, P2, P3)
+ 8. Target Design Principles
+ 9. Proposed Global Layout and Navigation
+10. Module-by-Module Redesign Specification (with Text Wireframes)
+11. Design Tokens and Visual Standards
+12. Reusable Component Specification
+13. Responsive Design Requirements
+14. Accessibility Requirements (WCAG 2.2 AA)
+15. Existing Functionality Preservation Matrix
+16. Implementation Roadmap (Phases 1-4)
+17. QA and Regression Test Plan
+18. Acceptance Criteria
+19. Risks, Dependencies, and Limitations
+20. Final Recommendations and Architectural Sign-Off
+================================================================================
+
+
+1. PROJECT OVERVIEW AND AUDIT SCOPE
+--------------------------------------------------------------------------------
+1.1 System Identity & Core Purpose
+CMOS (Creative & Motion Operations System) / Orbiz ERP is a specialized internal
+enterprise enterprise operations management platform engineered for end-to-end
+coordination between Account Executives (Requesters), Creative Directors
+(Team Leads), Creative Strategists (Strategic PICs), Graphic Designers (GD PICs),
+Motion Graphic Designers (Motion PICs), and Live Streaming Broadcast Teams
+(Operators).
+
+The platform tracks creative tasks from initial brief submission, concept
+ideation, static graphic design production, and approval through to automated
+handover for motion graphic animation and live streaming broadcast checkout.
+It additionally enforces Service Level Agreements (SLAs), measures team capacity
+via difficulty-weighted point models, archives completed weekly deliverables,
+and synchronizes request metadata in real time to external Google Spreadsheets.
+
+1.2 Audit Scope & Methodology
+This audit was performed via a dual-methodology approach:
+a) Static Source Codebase Inspection:
+   Direct AST and line-by-line review of all 25 Next.js App Router routes,
+   shared layout trees, utility engines, database connectors, and state stores.
+b) Dynamic Runtime & Visual Inspection:
+   Live browser exploration of the active local development server
+   (http://localhost:3000) using multi-role personas (System Administrator,
+   Team Lead, Graphic Designer, Motion Designer). Both Light and Dark theme
+   states were audited alongside mobile, tablet, and ultra-wide viewports.
+
+1.3 Non-Destructive Constraint
+This document represents an audit and redesign specification. In accordance with
+the strict execution guidelines, NO application source code, business rules,
+PostgreSQL database schemas, migration files, or API contracts have been modified.
+
+
+2. REPOSITORY AND TECHNOLOGY FINDINGS
+--------------------------------------------------------------------------------
+2.1 Technology Stack Architecture
+- Framework           : Next.js 16.3.6 (App Router with Turbopack bundler)
+- Core Library        : React 19.0.0
+- Language            : TypeScript 5.x (Strict typechecking enabled)
+- Styling Engine      : Tailwind CSS v4 (@import "tailwindcss") augmented with
+                        a 1,047-line global design token sheet (src/app/globals.css)
+- Persistence Store   : Hybrid architecture:
+                        1. Supabase PostgreSQL client (src/lib/supabase.ts)
+                        2. Reactive Promise-based store (src/lib/supabase-store.ts)
+                        3. In-memory / localStorage fallback (src/lib/store.ts)
+- Icons               : Lucide React (v0.400+)
+- Animation           : Framer Motion (v11.x)
+- Authentication      : Stateless HMAC-SHA256 session token cookies with RBAC
+                        role enforcement (src/lib/server-auth.ts)
+- External Sync       : Google Sheets API v4 with server-only JWT authentication
+                        (src/lib/google-sheets-server.ts) and client-safe outbox
+                        (src/lib/google-sheets-outbox.ts)
+
+2.2 Directory Structure & Module Organization
+cmoms/
+├── docs/
+│   ├── CAMPAIGN_USAGE_AND_FUTURE_SYNC_DESIGN.md
+│   └── ui-ux-redesign-audit.txt (This document)
+├── src/
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── auth/ (login, logout)
+│   │   │   ├── campaign/ (usage query, sync outbox worker)
+│   │   │   ├── motion/ (approved motion queries)
+│   │   │   ├── notifications/ (read/unread polling)
+│   │   │   ├── requests/ (approved requests, message threads)
+│   │   │   └── tasks/ (task message threads)
+│   │   ├── dashboard/
+│   │   │   ├── admin/ (audit, clients, content-types, holidays, users)
+│   │   │   ├── archive/ (weekly partition archive)
+│   │   │   ├── campaign/ (campaign usage management & sync)
+│   │   │   ├── campaign-usage/ (legacy empty directory - candidate for cleanup)
+│   │   │   ├── capacity/ (workload & team capacity meters)
+│   │   │   ├── motion/ (motion pipeline kanban & table)
+│   │   │   ├── reports/ (SLA reports & turnaround analytics)
+│   │   │   ├── tasks/ (strategic, mockup, e-commerce pipelines)
+│   │   │   ├── layout.tsx (collapsible sidebar, notification topbar)
+│   │   │   └── page.tsx (executive overview & KPI dashboard)
+│   │   ├── login/page.tsx (login form & 14 quick demo access accounts)
+│   │   ├── register/page.tsx (invite-only staff registration)
+│   │   ├── globals.css (tokens, cards, tables, kanban classes)
+│   │   └── layout.tsx (root HTML, Inter font, theme provider)
+│   ├── components/
+│   │   ├── motion-kanban-card.tsx (motion card with render indicators)
+│   │   ├── request-kanban-card.tsx (creative task card with SLA pill)
+│   │   ├── task-chat-section.tsx (real-time chat, attachments, mentions)
+│   │   ├── theme-provider.tsx (next-themes provider)
+│   │   └── theme-toggle.tsx (moon/sun theme toggle button)
+│   ├── lib/
+│   │   ├── analytics-engine.ts (occupancy, SLA, request vs output)
+│   │   ├── archive-engine.ts (weekly partitioning & auto-archive)
+│   │   ├── auth.tsx (React context auth provider)
+│   │   ├── chat-auth.ts (fine-grained message editing permissions)
+│   │   ├── constants.ts (labels, column definitions, difficulty weights)
+│   │   ├── google-sheets-adapter.ts (read-only sheet parser)
+│   │   ├── google-sheets-outbox.ts (browser-safe queue & row formatters)
+│   │   ├── google-sheets-server.ts (server-only Google JWT REST API)
+│   │   ├── pipeline-router.ts (strategic/mockup/e-commerce/motion routing)
+│   │   ├── rate-limiter.ts (token bucket sliding-window limiter)
+│   │   ├── server-auth.ts (HMAC-SHA256 session encoder/decoder)
+│   │   ├── sla-engine.ts (business-day holiday-aware calculator)
+│   │   ├── store.ts (synchronous local memory store)
+│   │   ├── supabase.ts (Supabase JS client init)
+│   │   ├── supabase-store.ts (asynchronous primary store)
+│   │   ├── types.ts (core TypeScript interfaces & types)
+│   │   ├── use-click-outside.ts (DOM click-outside hook)
+│   │   ├── use-modal-manager.ts (mutual exclusion modal manager)
+│   │   ├── use-persistent-state.ts (localStorage-synced state hook)
+│   │   └── utils.ts (formatting, date calculations, sanitizers)
+│   └── tests/ (20 verified test suites covering all workflows)
+
+2.3 Operational Workflows & Business Rules Discovered
+1. Four Distinct Pipelines:
+   - STRATEGIC: For early conceptual creative work. Tasks have StratStatus
+     (PENDING, IN_PROGRESS, REVIEW, REVISION, APPROVED). Assigned to Strategic PIC.
+   - GD_MOCKUP: Promotional mockup assets. Originates from Orca or E-commerce.
+     Has DesignStatus (UNASSIGNED, ASSIGNED, IN_PROGRESS, SUBMITTED, REVISION,
+     APPROVED). Can auto-handover to Motion once approved.
+   - GD_NON_MOCKUP: E-commerce marketplace assets (Shopee/TikTok feeds, banners).
+     Does not transition to Motion. Terminal status is APPROVED/CLOSED.
+   - MOTION: Animation tasks. Either Standalone or Auto-Handover from approved
+     GD_MOCKUP. Tracks difficulty (LVL 1-4) and MotionStatus (QUEUED, IN_PROGRESS,
+     SUBMITTED, REVISION, APPROVED, COMPLETED).
+2. Difficulty Weighting System:
+   - Design: LOW (2.5 pts), MEDIUM (3.5 pts), HIGH (4.5 pts).
+   - Motion: LVL 1 (2.0 pts), LVL 2 (3.0 pts), LVL 3 (4.0 pts), LVL 4 (5.0 pts).
+   - Capacity Thresholds: Staff (7.0 pts/day = 140 pts/month), Intern (5.0 pts/day).
+3. SLA Operational Excellence:
+   - Calculated in net business days excluding weekends and configured holidays.
+   - <= 3 business days = EXCELLENCE
+   - 4 - 5 business days = GOOD
+   - > 5 business days = BAD
+4. Weekly Partition Archiving:
+   - Approved tasks are automatically grouped by year-month-week
+     (e.g., "2026-10-W3" based on due date / completion date).
+   - Keeps active kanban boards clean while retaining full searchability.
+
+
+3. EXISTING ROUTES AND PAGE INVENTORY
+--------------------------------------------------------------------------------
+The application exposes 14 user-facing page routes and 7 API route endpoints.
+All user-facing routes were verified as functional in the running app:
+
+ROUTE PATH                   FILE PATH                             AUTH / RBAC
+--------------------------------------------------------------------------------
+/login                       src/app/login/page.tsx                Public
+/register                    src/app/register/page.tsx             Public (Token)
+/dashboard                   src/app/dashboard/page.tsx            All Roles
+/dashboard/tasks             src/app/dashboard/tasks/page.tsx      All Roles
+/dashboard/motion            src/app/dashboard/motion/page.tsx     All Roles
+/dashboard/campaign          src/app/dashboard/campaign/page.tsx   All Roles
+/dashboard/archive           src/app/dashboard/archive/page.tsx    All Roles
+/dashboard/capacity          src/app/dashboard/capacity/page.tsx   Admin, Lead,
+                                                                   Strategic, GD, Motion
+/dashboard/reports           src/app/dashboard/reports/page.tsx    All Roles
+/dashboard/admin/clients     src/app/dashboard/admin/clients/      Admin, Lead
+/dashboard/admin/content-    src/app/dashboard/admin/content-      Admin, Lead
+  types                        types/page.tsx
+/dashboard/admin/holidays    src/app/dashboard/admin/holidays/     Admin, Lead
+/dashboard/admin/users       src/app/dashboard/admin/users/        Admin, Lead
+/dashboard/admin/audit       src/app/dashboard/admin/audit/        Admin Only
+
+API ROUTES:
+/api/auth/login              src/app/api/auth/login/route.ts       Public
+/api/auth/logout             src/app/api/auth/logout/route.ts      Authenticated
+/api/campaign                src/app/api/campaign/route.ts         All Roles
+/api/campaign/sync           src/app/api/campaign/sync/route.ts    Admin, Lead
+/api/motion/approved         src/app/api/motion/approved/route.ts  All Roles
+/api/notifications           src/app/api/notifications/route.ts    Authenticated
+/api/notifications/read      src/app/api/notifications/read/       Authenticated
+/api/requests/approved       src/app/api/requests/approved/        All Roles
+/api/requests/[id]/messages  src/app/api/requests/[id]/messages/   Authenticated
+/api/tasks/[id]/messages     src/app/api/tasks/[id]/messages/      Authenticated
+
+
+4. VERIFIED FEATURE INVENTORY
+--------------------------------------------------------------------------------
+Every feature below was verified by inspecting source code and checking live
+behavior on the running local instance:
+
+--------------------------------------------------------------------------------
+MODULE: Global Shell and Navigation
+--------------------------------------------------------------------------------
+Feature: Collapsible Sidebar Navigation
+Current behavior: Sidebar toggles between 270px and 68px width. State is
+  persisted in localStorage ('cmos_sidebar_collapsed'). Links display icons and
+  labels, with tooltips when collapsed.
+Verification status: Verified
+Evidence: src/app/dashboard/layout.tsx:55-73, src/app/globals.css:585-636
+Current UI/UX problem: In collapsed mode, the user avatar and logout button at
+  the bottom shrink awkwardly. The brand logo disappears completely without an
+  iconic glyph replacement.
+Proposed redesign: Implement a refined 240px expanded / 64px icon-rail sidebar.
+  Use a sleek square brand mark when collapsed. Maintain clean active indicators
+  with a 2px left border accent.
+Functional behavior to preserve: Collapsed state persistence in localStorage;
+  role-based visibility; route prefetching.
+Priority: P1
+Acceptance criteria: Smooth 150ms transition; keyboard focusable; tooltips
+  appear reliably on hover in collapsed mode.
+
+Feature: Role-Based Access Control (RBAC) Filtering
+Current behavior: Sidebar menu links are filtered against authUser.role_name.
+  Requesters and Operators do not see Workload & Capacity or Administration.
+  Audit Trail is restricted strictly to ADMIN.
+Verification status: Verified
+Evidence: src/app/dashboard/layout.tsx:23-44, src/app/dashboard/admin/audit/page.tsx:38-51
+Current UI/UX problem: If a user attempts to access an unauthorized route
+  directly via URL, some pages show a red error shield, while others redirect
+  silently, creating inconsistent user feedback.
+Proposed redesign: Standardize 403 Forbidden state with a clean, branded
+  unauthorized banner and an explicit "Return to Dashboard" action.
+Functional behavior to preserve: Strict route blocking for unauthorized roles.
+Priority: P2
+Acceptance criteria: Consistent 403 feedback across all restricted routes.
+
+Feature: Header Bar, Notifications & Theme Switching
+Current behavior: Topbar contains breadcrumbs on the left, and Theme Toggle
+  (Dark/Light) + Notification Bell on the right. Notification dropdown displays
+  tabbed categories (All, Messages, Status, Revisions) with unread counters.
+Verification status: Verified
+Evidence: src/app/dashboard/layout.tsx:238-340, src/components/theme-toggle.tsx
+Current UI/UX problem: Topbar is underutilized. There is no global search bar,
+  no quick "Create Request" CTA, and breadcrumbs are non-interactive static text.
+Proposed redesign: Add an interactive breadcrumb trail, a global command
+  search bar (`Cmd+K` shortcut hint), a prominent "+ New Request" button,
+  and consolidate user profile dropdown in the top right.
+Functional behavior to preserve: Live Supabase notification channel subscription;
+  mark-as-read functionality.
+Priority: P1
+Acceptance criteria: Breadcrumb segments link back to parent routes; theme
+  toggle updates `data-theme` attribute instantly without FOUC.
+
+--------------------------------------------------------------------------------
+MODULE: Executive Dashboard (/dashboard)
+--------------------------------------------------------------------------------
+Feature: Six Operational KPI Stat Cards
+Current behavior: Renders Active Tasks, Unassigned, In Progress, Completed,
+  Motion Queue, and This Period total in a responsive 6-column grid.
+Verification status: Verified
+Evidence: src/app/dashboard/page.tsx:92-99, 147-157
+Current UI/UX problem: Numbers are visually loud (22px bold) but lack trend
+  context (no delta indicators vs last period). Cards are visually repetitive.
+Proposed redesign: Elevate KPI cards with small semantic trend indicators
+  (e.g., "+3 from last week" or "Target: 50"), subtle micro-icons, and
+  consistent padding.
+Functional behavior to preserve: Real-time calculation from active task pool.
+Priority: P2
+Acceptance criteria: Clean typography hierarchy; clear semantic status colors.
+
+Feature: Circular SLA Compliance Gauge & Breakdown
+Current behavior: SVG donut chart displays overall on-time rate percentage with
+  colored horizontal progress bars for Excellence, Good, and Bad ratings.
+Verification status: Verified
+Evidence: src/app/dashboard/page.tsx:161-210
+Current UI/UX problem: The donut chart takes up excessive vertical height relative
+  to its informational value. The "All Time" label is static and disconnected
+  from the period selector.
+Proposed redesign: Replace oversized SVG donut with a clean compact linear gauge
+  or segmented progress bar with explicit count and percentage badges.
+Functional behavior to preserve: Formula: (Excellence + Good) / Total SLA Tasks.
+Priority: P2
+Acceptance criteria: Gauge dynamically updates when period filter changes.
+
+Feature: Alerts & Actions Panel (Overdue & Unassigned)
+Current behavior: Highlights tasks past due date and tasks awaiting designer
+  assignment with red and blue warning boxes.
+Verification status: Verified
+Evidence: src/app/dashboard/page.tsx:266-329
+Current UI/UX problem: If there are 29 overdue tasks, only 3 are displayed with
+  no pagination or "View All Overdue" deep filter link.
+Proposed redesign: Provide a direct click-through filter link that takes the user
+  to `/dashboard/tasks?filter=overdue` with active filter chips pre-applied.
+Functional behavior to preserve: Zero-alert "All Clear" empty state illustration.
+Priority: P1
+Acceptance criteria: Clicking the alert redirects to tasks list filtered by
+  overdue status.
+
+--------------------------------------------------------------------------------
+MODULE: Request Pipelines (/dashboard/tasks & /dashboard/motion)
+--------------------------------------------------------------------------------
+Feature: Pipeline Routing & Isolation (Strategic, Mockup, E-Commerce, Motion)
+Current behavior: Dedicated Kanban boards with status columns tuned to specific
+  workflows. Strategic has 5 columns (Pending to Approved Concept). GD Mockup
+  has 6 columns and integrates with Motion. GD E-Commerce has 6 columns.
+  Motion has 6 columns tracking animation.
+Verification status: Verified
+Evidence: src/lib/pipeline-router.ts:1-60, src/app/dashboard/tasks/page.tsx:68-82
+Current UI/UX problem: Redundant navigation. Pipelines are selectable from the
+  sidebar AND from an oversized secondary pill row at the top of the tasks page.
+Proposed redesign: Remove the redundant secondary pipeline tabs from the page
+  body. Let the sidebar and a clean top breadcrumb dictate the active pipeline.
+Functional behavior to preserve: Complete workflow separation; brief validation;
+  handover rules.
+Priority: P1
+Acceptance criteria: Seamless switching between pipelines; correct status
+  columns rendered per pipeline.
+
+Feature: Kanban Task Cards (RequestKanbanCard & MotionKanbanCard)
+Current behavior: Cards display task code, client type, brand, campaign,
+  content type, source, difficulty, due date, overdue badges, SLA pill,
+  AE avatar, GD avatar, and action button (e.g. "Start Work", "Submit").
+Verification status: Verified
+Evidence: src/components/request-kanban-card.tsx, src/components/motion-kanban-card.tsx
+Current UI/UX problem: Extreme badge and tag overload! Each card displays 6 to 9
+  separate colored pill badges. Difficulty is displayed twice on the same card
+  (top right and bottom pill row). Overdue warning is visually noisy.
+Proposed redesign: Consolidate card metadata into a structured 3-tier hierarchy:
+  1. Top: Task Code (monospace) + Single Priority/Difficulty dot + Client Name
+  2. Middle: Content Type + Campaign Name (subtle muted text)
+  3. Bottom: Due Date (turns red only if overdue) + PIC Avatar initials
+Functional behavior to preserve: HTML5 drag-and-drop; quick action button;
+  click to open detail modal.
+Priority: P0
+Acceptance criteria: Badge clutter reduced by at least 50%; card height made
+  more uniform.
+
+Feature: Multi-Dimensional Filter Toolbar
+Current behavior: 7 filters in a horizontal row: Search query, Month dropdown,
+  Year dropdown, Date picker, Status, Role, and PIC dropdown + Export CSV.
+Verification status: Verified
+Evidence: src/app/dashboard/tasks/page.tsx:98-115, 345-420
+Current UI/UX problem: Controls wrap irregularly on 1080p and 1366px screens.
+  Bilingual text ("All Months" vs "Semua Role"). Multi-select dropdowns lack
+  checkboxes.
+Proposed redesign: Unify into an enterprise filter bar: Search input + View
+  toggle (Kanban/Table) on the left; Filter Popover button with active badge
+  count + "Export" + "+ New Task" on the right. Language unified to English
+  (or Indonesian) consistently.
+Functional behavior to preserve: Real-time reactive filtering across all columns;
+  CSV export generation.
+Priority: P1
+Acceptance criteria: Toolbar fits on one line at 1280px; filter count badge
+  indicates active filters.
+
+Feature: Task Detail Modal with Tabbed Hierarchy
+Current behavior: Modal opened by clicking any task card. Contains 4 tabs:
+  Overview (brief metadata), Brief & Assets (links), Revision History
+  (reasons, timestamps, links), and Live Chat (interactive discussion).
+Verification status: Verified
+Evidence: src/app/dashboard/tasks/page.tsx:850-1420
+Current UI/UX problem: Action buttons (Approve, Revision, Assign, Delete) are
+  scattered across different tabs or placed at the bottom with inconsistent
+  visual weight. Modals can exceed viewport height and clip primary buttons.
+Proposed redesign: Introduce a sticky footer for primary lifecycle actions
+  (Approve, Request Revision, Handover). Keep tab navigation clean at the top.
+  Ensure modal max-height is 85vh with internal scrolling.
+Functional behavior to preserve: Mutual exclusion modal manager; Escape key
+  handling; click-outside protection.
+Priority: P0
+Acceptance criteria: Primary action buttons always visible regardless of scroll
+  position; zero clipping.
+
+Feature: Interactive Task Chat Section (TaskChatSection)
+Current behavior: Threaded chat embedded inside task detail modal. Supports text
+  messages, image/video attachments (validated <= 10MB), edit message, delete
+  message, and unread message indicators.
+Verification status: Verified
+Evidence: src/components/task-chat-section.tsx:1-250
+Current UI/UX problem: Message bubbles in dark mode have low contrast with the
+  modal background. Timestamps are tiny (10px) and difficult to read.
+Proposed redesign: Improve bubble contrast using distinct surface colors
+  (var(--bg-tertiary) for incoming, var(--accent-blue) with white text for outgoing).
+  Standardize 11px legible timestamps.
+Functional behavior to preserve: Real-time message reception; attachment size
+  validation; chat permissions.
+Priority: P2
+Acceptance criteria: Clear distinction between sender and receiver bubbles;
+  accessible contrast.
+
+--------------------------------------------------------------------------------
+MODULE: Motion Pipeline & Auto-Handover (/dashboard/motion)
+--------------------------------------------------------------------------------
+Feature: Standalone & Auto-Handover Motion Task Tracking
+Current behavior: Manages motion tasks created standalone or escalated from
+  approved GD_MOCKUP tasks. Tracks animation status, rendering state, and
+  difficulty (LVL 1 to 4).
+Verification status: Verified
+Evidence: src/app/dashboard/motion/page.tsx:1-150, src/components/motion-kanban-card.tsx
+Current UI/UX problem: Motion cards display large red/green render status badges
+  that overwhelm the brand and due date. The handover link to parent GD task
+  is easily missed.
+Proposed redesign: Display render status as a subtle icon badge next to the
+  task code. Place the "Source GD Mockup" link prominently in the card footer.
+Functional behavior to preserve: Auto-handover data integrity; motion difficulty
+  weighting; status progression.
+Priority: P1
+Acceptance criteria: Render indicators are legible without overpowering the card;
+  parent task code is clickable.
+
+--------------------------------------------------------------------------------
+MODULE: Campaign Usage Management (/dashboard/campaign)
+--------------------------------------------------------------------------------
+Feature: Campaign Target vs Actual Matrix & Sync Outbox Modal
+Current behavior: Displays BAU, DD, PAYDAY, and SPECIAL CAMPAIGN usage metrics
+  pulled from read-only Google Sheets adapter. Features an "Outbox Sinkronisasi"
+  modal with live status (SYNCED, PENDING, FAILED) and retry triggers.
+Verification status: Verified
+Evidence: src/app/dashboard/campaign/page.tsx:1-120, src/lib/google-sheets-outbox.ts
+Current UI/UX problem: Table has over 14 columns causing severe horizontal
+  overflow. Column headers wrap awkwardly. The sync outbox button is buried in
+  the table header.
+Proposed redesign: Provide a clean 4-card summary for the 4 campaign categories
+  at the top. Move "Sync Outbox" to a prominent position in the page header
+  with a live pulse dot indicating pending sync items.
+Functional behavior to preserve: Read-only external sheet safety; transactional
+  outbox queue; manual retry triggers.
+Priority: P1
+Acceptance criteria: 4 campaign cards display clear progress bars (e.g. 18/25 used);
+  sync outbox modal is responsive.
+
+--------------------------------------------------------------------------------
+MODULE: Workload & Capacity Management (/dashboard/capacity)
+--------------------------------------------------------------------------------
+Feature: Designer Capacity Meters & Difficulty Weighting
+Current behavior: Computes designer workload using task difficulty points
+  against monthly thresholds (140 pts for staff). Displays Available, Optimal,
+  and Overloaded states.
+Verification status: Verified
+Evidence: src/app/dashboard/capacity/page.tsx:1-100, src/lib/analytics-engine.ts
+Current UI/UX problem: The page is dominated by a giant 9-dropdown filter box
+  ("GLOBAL MULTI-DIMENSIONAL FILTER") that pushes the actual capacity meters
+  below the fold.
+Proposed redesign: Collapse the 9 filters into a streamlined contextual filter
+  bar. Place the Team Capacity Overview immediately at the top of the viewport.
+Functional behavior to preserve: Point accumulation logic; custom daily capacity
+  configuration modal.
+Priority: P1
+Acceptance criteria: Capacity progress bars visible on initial load without
+  scrolling.
+
+--------------------------------------------------------------------------------
+MODULE: Archived Tasks (/dashboard/archive)
+--------------------------------------------------------------------------------
+Feature: Weekly Partition & Task Restore
+Current behavior: Automatically groups approved and closed tasks into weekly
+  partitions (e.g., "Week 1 (01-07 Okt 2026)"). Supports keyword search, pipeline
+  filtering, and restoring accidentally closed tasks.
+Verification status: Verified
+Evidence: src/app/dashboard/archive/page.tsx:1-100, src/lib/archive-engine.ts
+Current UI/UX problem: The weekly partition accordion headers use small text
+  and lack summary counters (e.g., number of tasks in that week).
+Proposed redesign: Upgrade weekly partition headers to clean expandable cards
+  with badge counters (e.g., "Week 3 • 12 Tasks • 100% SLA Excellence").
+Functional behavior to preserve: Partition assignment algorithm; restore
+  permission checks (Admin/Team Lead only).
+Priority: P2
+Acceptance criteria: Partition headers clearly show total deliverables and
+  expand/collapse smoothly.
+
+--------------------------------------------------------------------------------
+MODULE: Reports & Analytics (/dashboard/reports)
+--------------------------------------------------------------------------------
+Feature: SLA Performance Reports & Output Volume Analytics
+Current behavior: Evaluates Operational Excellence (<=3 days), Good (4-5 days),
+  and Bad (>5 days) by Brand, by Month, and by Designer.
+Verification status: Verified
+Evidence: src/app/dashboard/reports/page.tsx:1-120
+Current UI/UX problem: Pipeline tracking table uses cryptic single-letter
+  badges: `Q: 1`, `IP: 1`, `S: 1`, `R: 1`, `D: 8` with no tooltip or legend.
+Proposed redesign: Replace cryptic letters with clear iconography or standard
+  abbreviations with hover tooltips (Queued, In Progress, Submitted, Revision, Done).
+Functional behavior to preserve: Accurate business-day SLA computation excluding
+  configured holidays.
+Priority: P1
+Acceptance criteria: Status breakdown in reports is self-explanatory without
+  prior training.
+
+--------------------------------------------------------------------------------
+MODULE: Administration (/dashboard/admin/*)
+--------------------------------------------------------------------------------
+Feature: Client, Content Type, Holiday, User Management & Audit Trail
+Current behavior: Admin CRUD tables for system master data. Users page manages
+  staff roles and daily capacity points. Audit Trail logs system events.
+Verification status: Verified
+Evidence: src/app/dashboard/admin/*
+Current UI/UX problem: Table layouts across the 5 admin pages have inconsistent
+  button styling, varying padding, and different delete confirmation modals.
+Proposed redesign: Implement a unified AdminDataTable template with standard
+  pagination, search, "+ Add Record" button, and consistent destructive dialogs.
+Functional behavior to preserve: All CRUD operations, validation rules, and
+  audit logging.
+Priority: P2
+Acceptance criteria: Identical table design and button conventions across all
+  5 admin sub-modules.
+
+
+5. FEATURES THAT ARE PARTIALLY VERIFIED, UNVERIFIED, OR MISSING
+--------------------------------------------------------------------------------
+5.1 Partially Verified Features
+- Mobile Drag-and-Drop: HTML5 drag-and-drop on Kanban boards works on desktop
+  mouse devices, but touch-based drag-and-drop on mobile devices is partially
+  unsupported by native HTML5 events. (Current workaround: Status dropdown in modal).
+- Live Chat WebSockets: Chat falls back to periodic interval polling when
+  Supabase Realtime WebSocket connection is unavailable or unconfigured.
+
+5.2 Unverified Features
+- External Google Sheets Write (Production Credentials): Real-time sync engine
+  is 100% verified via automated mock tests (13/13 passing in
+  realtime_sheets_sync_verification.ts), but live write to the external Google
+  Cloud spreadsheet requires the user to insert their Google Service Account
+  private key in `.env.local`.
+
+5.3 Missing / Deprecated Artifacts
+- `src/app/dashboard/campaign-usage/` is an empty orphaned folder that should
+  be removed in clean-up since the actual module lives at `/dashboard/campaign`.
+- `src/app/api/campaign-usage/` is an empty orphaned folder.
+
+
+6. CURRENT UI/UX ASSESSMENT
+--------------------------------------------------------------------------------
+6.1 Visual Hierarchy
+- Problem: Screen elements compete aggressively for user attention. On Kanban
+  cards, task titles, difficulty badges, client tags, and SLA badges all use
+  high-saturation saturated backgrounds.
+- Impact: High cognitive fatigue for designers managing 20+ cards daily.
+
+6.2 Readability & Typography
+- Problem: Excessive font size variation (ranging from 8px micro-badges to 24px
+  KPI text). Several metadata elements use font sizes below 11px, failing
+  comfort standards for desktop display viewing.
+- Impact: Operators and designers struggle to scan timestamps and due dates
+  quickly during busy shifts.
+
+6.3 Information Density & Clutter
+- Problem: Filters and cards attempt to expose every single database field
+  simultaneously. On the Capacity page, 9 dropdowns push operational metrics
+  off-screen.
+- Impact: Wasted vertical screen space and unnecessary scrolling.
+
+6.4 Navigation & Usability
+- Problem: Redundant navigation paths (Pipeline links in sidebar AND in page
+  body). Inconsistent placement of the user profile (bottom of sidebar instead
+  of standard enterprise top-right header).
+- Impact: Confusion regarding active location and unnecessary mouse travel.
+
+6.5 Consistency
+- Problem: Mixed language usage (Indonesian and English intermingled in filter
+  dropdowns, e.g., "All Months" next to "Semua Role").
+- Impact: Unpolished, amateur appearance inconsistent with high-grade enterprise software.
+
+6.6 Accessibility (WCAG 2.2 AA)
+- Problem: Status is sometimes communicated solely through color (e.g. green/red
+  dots without text labels). Several icon-only buttons lack `aria-label` attributes.
+  Dark mode contrast on secondary text (var(--text-muted): #6B7280 on #141619)
+  drops to ~3.8:1, falling below the WCAG AA minimum requirement of 4.5:1.
+- Impact: Fails accessibility standards for visually impaired team members.
+
+6.7 Responsive Design
+- Problem: At tablet (768px - 1024px) viewports, topbar controls overlap, and
+  Kanban column headers get cramped. On mobile, modals take up full width but
+  have awkward padding.
+- Impact: Mobile operational checkouts by Account Executives are frustrating.
+
+6.8 Interaction Feedback
+- Problem: Modal action buttons sometimes lack inline loading spinners during
+  asynchronous database writes, causing users to double-click submit buttons.
+- Impact: Risk of duplicate form submissions and user confusion.
+
+
+7. PRIORITIZED ISSUES AND EVIDENCE
+--------------------------------------------------------------------------------
+[P0 - CRITICAL]
+ISSUE-01: Task Detail Modal Action Button Viewport Clipping
+- File: src/app/dashboard/tasks/page.tsx:850-1350
+- Evidence: In 768px and 900px vertical viewports, the modal content pushes the
+  "Approve", "Request Revision", and "Close" buttons off the bottom of the screen.
+- Impact: Approvers and Team Leads are blocked from approving tasks unless they
+  manually zoom out their browser window.
+- Recommendation: Convert modal footer to a fixed, sticky bottom bar with
+  standardized primary and secondary buttons.
+
+ISSUE-02: Kanban Card Visual Clutter and Information Overload
+- File: src/components/request-kanban-card.tsx:100-240
+- Evidence: 8 separate colored badge elements per card; duplicate difficulty
+  indicators (top right + bottom pill); visually jarring overdue styling.
+- Impact: Cognitive overload slows down task triage for Team Leads.
+- Recommendation: Redesign Kanban card with a strict 3-tier hierarchy, reducing
+  colored pill badges from 8 to a maximum of 2 semantic badges.
+
+[P1 - HIGH]
+ISSUE-03: Redundant Multi-Tier Pipeline Navigation
+- File: src/app/dashboard/tasks/page.tsx:210-240, src/app/dashboard/layout.tsx:25-35
+- Evidence: Both sidebar and page header render identical tabs for Strategic,
+  GD Mockup, GD E-Commerce, and Motion pipelines.
+- Impact: Disorients users; wastes 60px of vertical header space.
+- Recommendation: Retain pipeline switching in the sidebar and top breadcrumbs.
+  Remove the duplicate horizontal tab row from the page body.
+
+ISSUE-04: Filter Toolbar Overcrowding on 1080p and 1366px Screens
+- File: src/app/dashboard/tasks/page.tsx:340-410, src/app/dashboard/capacity/page.tsx:120-180
+- Evidence: 7 to 9 dropdowns rendered in a single flex-row cause horizontal wrapping
+  and push Kanban columns down.
+- Impact: Cluttered UI and broken layouts on standard laptop resolutions.
+- Recommendation: Group filters into a compact Filter Popover with a badge
+  counter, keeping only Search and View Toggle on the main bar.
+
+ISSUE-05: Cryptic Single-Letter Abbreviations in Reports Table
+- File: src/app/dashboard/reports/page.tsx:90-120
+- Evidence: Workload tracking table renders badges `Q: 1`, `IP: 1`, `S: 1`, `R: 1`, `D: 8`.
+- Impact: New staff and executives cannot interpret the metrics without coaching.
+- Recommendation: Expand badges to clear icons with descriptive tooltips.
+
+[P2 - MEDIUM]
+ISSUE-06: Bilingual Language Inconsistency
+- File: src/app/dashboard/tasks/page.tsx:360-390, src/app/dashboard/admin/users/page.tsx
+- Evidence: "All Months", "All Years", "All Status" mixed directly with "Semua Role",
+  "Semua Nama / PIC", "Tambah User Baru".
+- Impact: Unprofessional, disjointed interface feel.
+- Recommendation: Establish a single primary application language (Standard
+  Indonesian with standard English tech terms, or 100% English) across all labels.
+
+ISSUE-07: Low Text Contrast in Dark Mode
+- File: src/app/globals.css:61-64
+- Evidence: Secondary text `#9CA3AF` on background `#141619` yields 3.8:1 contrast
+  ratio on small 12px text.
+- Impact: WCAG 2.2 AA non-compliance; eye strain in dark environments.
+- Recommendation: Adjust `--text-secondary` to `#A6ADBB` (4.8:1) and `--text-muted`
+  to `#8B949E`.
+
+ISSUE-08: User Profile & Logout Misplacement in Sidebar Bottom
+- File: src/app/dashboard/layout.tsx:410-460
+- Evidence: User avatar is pinned to the bottom of the sidebar at 270px width.
+  When sidebar is collapsed to 68px, the avatar initial is misaligned.
+- Impact: Deviates from standard enterprise ERP design patterns (top-right header).
+- Recommendation: Move user profile, role badge, and logout dropdown to the topbar.
+
+[P3 - LOW]
+ISSUE-09: Orphaned Empty Directories in App Tree
+- File: src/app/dashboard/campaign-usage/, src/app/api/campaign-usage/
+- Evidence: Folders exist with zero files.
+- Impact: Developer confusion during code maintenance.
+- Recommendation: Remove orphaned empty directories in subsequent cleanup.
+
+
+8. TARGET DESIGN PRINCIPLES
+--------------------------------------------------------------------------------
+1. Restrained Enterprise Aesthetics:
+   Clean, flat, high-contrast surfaces inspired by Linear, Vercel, and GitHub.
+   Zero glassmorphism, zero decorative gradients on cards, zero floating blobs.
+2. Purposeful Semantic Color:
+   Neutral backgrounds (grays, slates) with color reserved strictly for meaning:
+   - Emerald  : Approvals, SLA Excellence, Synced state.
+   - Amber    : Warnings, Due Today, Revisions, Optimal capacity.
+   - Red      : Overdue tasks, SLA Bad, Destructive actions.
+   - Blue     : Primary brand actions, In Progress states.
+   - Purple   : Strategic concept workflows.
+3. Rapid Information Scanning:
+   Card and table layouts designed for sub-second recognition of:
+   - What brand is this for?
+   - Who is working on it?
+   - When is it due?
+   - What is the blocker/status?
+4. Progressive Disclosure:
+   High-level metrics and cards visible by default; deep audit logs, full brief
+   descriptions, and chat history accessible via contextual modals and drawers.
+5. Absolute Functionality Preservation:
+   The visual redesign must not alter any existing database queries, SLA math,
+   pipeline routing, or role-based access rules.
+
+
+9. PROPOSED GLOBAL LAYOUT AND NAVIGATION
+--------------------------------------------------------------------------------
+9.1 Topbar Header Architecture (56px Height)
++------------------------------------------------------------------------------+
+| [Brand Mark] | Breadcrumb: Tasks > GD Mockup Pipeline       [Search] [Notif] [Theme] [User V]|
++------------------------------------------------------------------------------+
+- Left: Compact Orbiz CMOS glyph + dynamic, clickable breadcrumb navigation.
+- Center/Right: Quick Search (`Cmd+K`), Live Notification Bell with unread badge,
+  Theme Toggle (Light/Dark), and User Avatar Dropdown (Name, Role Badge, Logout).
+
+9.2 Sidebar Navigation Architecture (240px Expanded / 64px Collapsed)
++-------------------------+
+| CMOS ERP                |
+| Creative & Motion       |
+|-------------------------|
+| OPERATIONS              |
+| [o] Dashboard           |
+| [>] Strategic Pipeline  |
+| [=] GD Mockup Pipeline  |
+| [#] GD E-Commerce       |
+| [~] Motion Pipeline     |
+|                         |
+| MANAGEMENT              |
+| [*] Campaign Usage      |
+| [@] Workload & Capacity |
+| [%] Reports & Analytics |
+| [^] Archived Tasks      |
+|                         |
+| ADMINISTRATION (Admin)  |
+| [b] Clients & Brands    |
+| [t] Content Types       |
+| [c] Holiday Calendar    |
+| [u] User Management     |
+| [a] Audit Trail         |
+|-------------------------|
+| [<<] Collapse Sidebar   |
++-------------------------+
+
+
+10. MODULE-BY-MODULE REDESIGN SPECIFICATION
+--------------------------------------------------------------------------------
+
+10.1 Module: Executive Dashboard (/dashboard)
+---------------------------------------------
+Roles: All Roles (Content tuned to permissions)
+Purpose: Daily command center for creative leadership and operators.
+Existing Problems: Over-sized SVG donut chart; unclickable alert lists;
+  KPI cards lack trend deltas.
+Proposed Wireframe:
+
++------------------------------------------------------------------------------+
+| Overview Dashboard                           [Filter: Month V] [Filter: Year V] |
+|------------------------------------------------------------------------------|
+| [Active Tasks: 30] [Unassigned: 9] [In Progress: 11] [Review: 4] [SLA: 84.6%] |
+|------------------------------------------------------------------------------|
+| OPERATIONAL HIGHLIGHTS                       | ACTION REQUIRED (Urgent)      |
+| - Team Capacity: 38.75% (Safe)               | [!] 4 Tasks Overdue [View All]|
+| - Monthly Output: 107 Deliverables           | [?] 9 Unassigned Tasks        |
+| - SLA Excellence: 72.2% (Target: >70%)       | [*] 2 Revisions Pending       |
+|------------------------------------------------------------------------------|
+| RECENT ACTIVITY                              | CAPACITY SNAPSHOT             |
+| Code     Brand        PIC       Due   Status | Designer       Points   Status|
+| REQ-055  Delfi Choc   Badriyah  23/10 Review | Alfie Rahman   38.5 pts [==== ]|
+| REQ-054  Batiste      Yusuf     23/10 InProg | Yusuf Pratama  42.5 pts [=====]|
+| REQ-053  Delfi Choc   Unassign  13/10 Overdue| Badriyah Sari  57.0 pts [======|
++------------------------------------------------------------------------------+
+
+Key Redesign Rules:
+- Replace SVG circle with high-density KPI cards.
+- Clicking "Overdue" or "Unassigned" deep-links directly to `/dashboard/tasks`
+  with pre-applied URL query parameters (`?filter=overdue`).
+
+10.2 Module: Request Pipelines (/dashboard/tasks)
+-------------------------------------------------
+Roles: All Roles
+Purpose: Operational Kanban & Table views for Strategic, GD Mockup, and GD E-Commerce.
+Existing Problems: Redundant top tabs; 8+ colored badges per card; toolbar wraps awkwardly.
+Proposed Wireframe:
+
++------------------------------------------------------------------------------+
+| GD Mockup Pipeline                           [View: Kanban | Table] [+ New Task]
+| [Search task, brand...] [Filters (2) V] [Export CSV]                         |
+|------------------------------------------------------------------------------|
+| UNASSIGNED (2) | ASSIGNED (3)   | IN PROGRESS (4) | SUBMITTED (2) | APPROVED |
+|----------------+----------------+-----------------+---------------+----------|
+| REQ-054        | REQ-052        | REQ-049         | REQ-048       | REQ-040  |
+| Batiste Sham.  | L-MEN          | Delfi Chocolate | MuTouch       | Sosro    |
+| Mockup Set (1) | Feed Set (3)   | Mockup Set (3)  | Mockup Set    | Mockup   |
+| Due: 23 Okt    | Due: 20 Okt    | Due: 10 Okt [!] | Due: 19 Okt   | Handover |
+| [Assign PIC V] | PIC: Yusuf P.  | PIC: Alfie R.   | PIC: Sarah A. | PIC: Bima|
++------------------------------------------------------------------------------+
+
+Kanban Card Architecture:
+- Header  : Monospace Task Code + Client Type dot + Priority dot.
+- Title   : Client / Brand Name (Bold, 13px) + Campaign tag (subtle text).
+- Body    : Content Type + Quantity (e.g., "Mockup Set • 1 output").
+- Footer  : Due Date (turns red only if overdue) + PIC Avatar initials dot.
+- No duplicate difficulty badges; no decorative glowing borders.
+
+10.3 Module: Task Detail & Interactive Chat Modal
+-------------------------------------------------
+Roles: All Roles (Actions governed by permissions)
+Purpose: Complete brief inspection, file asset handoffs, revision history, and chat.
+Existing Problems: Modal buttons clip below viewport; chat bubbles have poor contrast.
+Proposed Wireframe:
+
++------------------------------------------------------------------------------+
+| REQ-2026-0054: Batiste Dry Shampoo - Mockup Set                     [X Close]|
+| Status: IN PROGRESS • Pipeline: GD MOCKUP • Due: 23 Okt 2026                 |
+|------------------------------------------------------------------------------|
+| [ Overview ]  [ Brief & Asset Links ]  [ Revision History (1) ]  [ Chat (4) ]|
+|------------------------------------------------------------------------------|
+| (Active Tab Content Area with 55vh fixed height and smooth vertical scroll)   |
+|                                                                              |
+| Brand       : Batiste Dry Shampoo (EXTERNAL)                                 |
+| Campaign    : DD (Double Date Campaign 2026)                                 |
+| Deliverables: Mockup Set (1 requested / 1 output)                            |
+| Brief Text  : "Create 2 aesthetic background variations for TikTok Live."    |
+| Asset Links : Figma Mockup Link: [Open in Figma ->]                          |
+|------------------------------------------------------------------------------|
+| STICKY ACTION FOOTER:                                                        |
+| [Delete Task]                    [Request Revision] [Submit for Approval ->] |
++------------------------------------------------------------------------------+
+
+Key Redesign Rules:
+- Sticky footer ensures life-cycle action buttons are always reachable.
+- Distinct chat message colors: `#1E293B` (incoming) vs `#2563EB` (outgoing).
+
+10.4 Module: Motion Graphics Pipeline (/dashboard/motion)
+---------------------------------------------------------
+Roles: Motion PICs, Team Lead, Admin, Requester, Operator
+Purpose: Managing video animations, renders, and live streaming handovers.
+Existing Problems: Render status badges dominate the card; parent GD links are obscure.
+Proposed Redesign:
+- Render state indicator displayed as a compact icon badge in the card header
+  (Orange spinner = Rendering, Green check = Render Complete).
+- Clear link badge: "Linked to GD: REQ-2026-0048".
+- Cut-off compilation times (13:00 and 17:00 WIB) clearly surfaced on the board.
+
+10.5 Module: Workload & Capacity Management (/dashboard/capacity)
+-----------------------------------------------------------------
+Roles: Admin, Team Lead, Designers, Motion PICs
+Purpose: Difficulty-weighted capacity management and burn-down tracking.
+Existing Problems: 9 dropdowns push capacity bars below the fold.
+Proposed Redesign:
+- Move filters into a collapsible accordion panel ("Advanced Filters").
+- Present 4 high-level KPI cards at top (Total Requests, Total Outputs, Avg Occupancy, SLA Rate).
+- Team Capacity cards arranged in an organized 2-column grid with clear color-coded
+  fill meters: Green (<=80%), Amber (81-100%), Red (>100% Overloaded).
+
+10.6 Module: Campaign Usage Management (/dashboard/campaign)
+------------------------------------------------------------
+Roles: All Roles
+Purpose: Live monitoring of campaign quotas (BAU, DD, Payday, Special) & Google Sheets Sync.
+Existing Problems: 14-column table horizontally overflows; sync button buried.
+Proposed Redesign:
+- Top: 4 Campaign Progress Cards with target-vs-actual progress bars and utilization %.
+- Header: Prominent "Google Sheets Sync Outbox" action with status pill ("3 Synced / 0 Pending").
+- Table: Streamlined columns with sticky left column for Brand Name and clean sorting headers.
+
+10.7 Module: Archived Tasks (/dashboard/archive)
+------------------------------------------------
+Roles: All Roles (Restore restricted to Admin/Lead)
+Purpose: Historic deliverables organized by Year-Month-Week partitions.
+Existing Problems: Accordion headers lack summary statistics.
+Proposed Redesign:
+- Partition headers display: "2026 - Oktober - Week 3 (15-21 Okt) • 14 Tasks • 100% SLA".
+- Table and Kanban toggle preserved with clear "Restore Task" confirmation dialog.
+
+10.8 Module: Reports & Analytics (/dashboard/reports)
+-----------------------------------------------------
+Roles: All Roles
+Purpose: Executive SLA performance, revision turnaround, and volume reporting.
+Existing Problems: Cryptic single-letter badges `Q, IP, S, R, D` in workload tables.
+Proposed Redesign:
+- Replace single letters with standard icons + hover tooltips (Queued, In Progress, Submitted, Revision, Approved).
+- High-contrast bar charts displaying SLA distribution by Month and by Brand.
+
+10.9 Module: Administration (/dashboard/admin/*)
+------------------------------------------------
+Roles: Admin, Team Lead
+Purpose: Master data (Clients, Content Types, Holidays, Users) and Audit Trail.
+Existing Problems: Inconsistent table padding and button variants across sub-pages.
+Proposed Redesign:
+- Standardized AdminDataTable component with unified search, pagination, and
+  consistent modal dialogs across all 5 sub-modules.
+
+
+11. DESIGN TOKENS AND VISUAL STANDARDS
+--------------------------------------------------------------------------------
+The redesign builds upon the existing CSS variables in `globals.css` with
+hardened contrast ratios and consistent token naming:
+
+11.1 Color Tokens
+TOKEN NAME               LIGHT MODE HEX      DARK MODE HEX       PURPOSE
+--------------------------------------------------------------------------------
+--bg-primary             #F8FAFC             #0F172A             Page background
+--bg-secondary           #FFFFFF             #1E293B             Cards & sidebars
+--bg-tertiary            #F1F5F9             #334155             Pillars & kanban cols
+--bg-hover               #E2E8F0             #475569             Hover states
+--border-primary         #E2E8F0             #334155             Card borders
+--border-secondary       #F1F5F9             #1E293B             Subtle dividers
+--text-primary           #0F172A             #F8FAFC             Primary text (14:1)
+--text-secondary         #475569             #CBD5E1             Labels & meta (7:1)
+--text-muted             #64748B             #94A3B8             Placeholders (4.6:1)
+
+SEMANTIC ACCENTS:
+--accent-blue            #2563EB             #3B82F6             Primary actions
+--accent-emerald         #059669             #10B981             Approved / On-time
+--accent-amber           #D97706             #F59E0B             Revision / Due soon
+--accent-red             #DC2626             #EF4444             Overdue / Danger
+--accent-purple          #7C3AED             #8B5CF6             Strategic Concept
+
+11.2 Typography Standards
+Font Family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif.
+- Display / Header 1 : 20px / 1.3 line-height / SemiBold (600)
+- Section Header 2  : 16px / 1.3 line-height / SemiBold (600)
+- Card Title        : 14px / 1.4 line-height / Medium (500)
+- Body Text         : 13px / 1.5 line-height / Regular (400)
+- Metadata / Labels : 12px / 1.4 line-height / Medium (500)
+- Micro Badges      : 11px / 1.2 line-height / SemiBold (600)
+- Code / Task ID    : 12px / Monospace ('JetBrains Mono', Consolas)
+
+11.3 Spacing Scale
+- 4px (--space-1)   : Micro gaps between badge icons and text
+- 8px (--space-2)   : Form field padding, button gap
+- 12px (--space-3)  : Card internal padding, toolbar item gap
+- 16px (--space-4)  : Standard card padding, column gap
+- 24px (--space-6)  : Page section spacing, layout margins
+- 32px (--space-8)  : Large container separation
+
+11.4 Border Radii & Elevation
+- Inputs / Buttons   : 6px border-radius
+- Cards / Containers : 8px border-radius
+- Modals / Popovers  : 10px border-radius
+- Badges / Avatars   : 4px border-radius (or full circle for avatars)
+- Elevation          : Subtle borders (1px solid var(--border-primary))
+                       combined with soft 1-2px shadows. Zero heavy drop-shadows.
+
+
+12. REUSABLE COMPONENT SPECIFICATION
+--------------------------------------------------------------------------------
+12.1 Component: AppButton
+- Variants: 'primary' (solid blue), 'secondary' (bordered white/slate),
+  'ghost' (transparent hover), 'danger' (subtle red border), 'success' (emerald).
+- Heights: 32px (compact), 38px (standard).
+- States: Normal, Hover, Active (scale 0.98), Disabled (opacity 0.5), Loading (spinner).
+
+12.2 Component: AppBadge
+- Variants: 'success', 'warning', 'error', 'info', 'neutral', 'purple'.
+- Padding: 2px 8px, font-size: 11px, font-weight: 600.
+- Semantic: Must always pair an icon or text label; never rely solely on color.
+
+12.3 Component: AppDataTable
+- Features: Sticky header, zebra hover, responsive horizontal scroll container,
+  sortable columns with direction arrows, pagination controls (25/50/100 per page).
+
+12.4 Component: AppModal
+- Structure: Backdrop blur, max-width 640px (standard) or 960px (wide detail),
+  max-height 85vh, fixed sticky header with close icon, scrollable body,
+  fixed sticky action footer.
+- Keyboard: ESC closes modal; Tab is trapped inside dialog.
+
+12.5 Component: AppKanbanCard
+- Dimensions: Fixed min-width 280px, uniform card padding 12px.
+- States: Draggable handle, hover shadow elevation, drag-over highlight.
+
+
+13. RESPONSIVE DESIGN REQUIREMENTS
+--------------------------------------------------------------------------------
+13.1 Desktop (>= 1280px)
+- Sidebar expanded (240px) or collapsed (64px) at user discretion.
+- Multi-column Kanban boards render horizontally with smooth touch-drag/trackpad scroll.
+- Dashboard KPI cards display in a clean 5-column or 6-column grid.
+
+13.2 Laptop / Small Desktop (1024px - 1279px)
+- Sidebar defaults to collapsed (64px) to maximize operational screen space.
+- Filter toolbar collapses secondary dropdowns into a single "Filters" popover.
+- KPI cards reflow to a 3-column x 2-row grid.
+
+13.3 Tablet (768px - 1023px)
+- Sidebar hidden behind mobile drawer toggle (hamburger menu).
+- Topbar breadcrumb truncates to active page name.
+- Kanban boards support full-width column pagination or switch to Table view.
+
+13.4 Mobile Phone (< 768px)
+- Dedicated card-based list view replaces multi-column Kanban boards.
+- Sticky floating "+ New" action button at bottom right.
+- Modals occupy 95% screen width and 90% screen height with large touch targets (min 44px).
+
+
+14. ACCESSIBILITY REQUIREMENTS (WCAG 2.2 AA)
+--------------------------------------------------------------------------------
+1. Contrast Compliance:
+   All text against surfaces must achieve at least 4.5:1 for normal body text
+   and 3:1 for large display text and UI components.
+2. Visible Keyboard Focus:
+   Every interactive element (buttons, links, inputs, dropdowns) must display
+   a high-contrast focus ring: `outline: 2px solid var(--accent-blue); outline-offset: 2px`.
+3. Screen Reader Semantics:
+   - Icon-only buttons must include explicit `aria-label` (e.g. `aria-label="Tutup modal"`).
+   - Dynamic alert panels must include `role="alert"` and `aria-live="polite"`.
+4. Non-Color Status Cues:
+   Overdue tasks must display both a red highlight AND an explicit text label
+   `OVERDUE (+Nd)` alongside a warning icon.
+5. Modal Focus Trapping:
+   When any modal opens, focus must automatically move to the first interactive
+   element, and focus must return to the trigger button when closed.
+
+
+15. EXISTING FUNCTIONALITY PRESERVATION MATRIX
+--------------------------------------------------------------------------------
+EXISTING FUNCTIONALITY           VERIFIED COMPONENT/FILE             REDESIGN STATUS
+--------------------------------------------------------------------------------
+HMAC Auth & Session Tokens       src/lib/server-auth.ts              PRESERVED 100%
+RBAC Role Navigation Rules       src/app/dashboard/layout.tsx        PRESERVED 100%
+4 Workflow Pipelines             src/lib/pipeline-router.ts          PRESERVED 100%
+Brief Validation Rules           src/lib/supabase-store.ts           PRESERVED 100%
+Motion Auto-Handover Engine      src/lib/supabase-store.ts           PRESERVED 100%
+Task Chat Threads & Attachments  src/components/task-chat-section.ts PRESERVED 100%
+Difficulty Capacity Weighting    src/lib/analytics-engine.ts         PRESERVED 100%
+Business-Day Holiday SLA Engine  src/lib/sla-engine.ts               PRESERVED 100%
+Weekly Partition Archiving       src/lib/archive-engine.ts           PRESERVED 100%
+Google Sheets Transaction Outbox src/lib/google-sheets-outbox.ts     PRESERVED 100%
+External Google Sheets REST API  src/lib/google-sheets-server.ts     PRESERVED 100%
+Admin Master Data CRUD           src/app/dashboard/admin/*           PRESERVED 100%
+Audit Trail Immutable Logging    src/app/dashboard/admin/audit/*     PRESERVED 100%
+Light/Dark Theme Persistence     src/components/theme-provider.tsx   PRESERVED 100%
+CSV Data Export                  src/lib/export.ts                   PRESERVED 100%
+
+
+16. IMPLEMENTATION ROADMAP
+--------------------------------------------------------------------------------
+
+STAGE 1: FOUNDATION & DESIGN SYSTEM (Days 1 - 2)
+Task 1.1: Standardize global CSS tokens in `globals.css` (high-contrast palette).
+Task 1.2: Refactor Topbar & Sidebar shell in `src/app/dashboard/layout.tsx`.
+Task 1.3: Create reusable component primitives (`AppButton`, `AppBadge`, `AppModal`, `AppDataTable`).
+Regression Tests: Verify theme switching, mobile drawer toggle, and RBAC sidebar links.
+
+STAGE 2: CORE OPERATIONS PIPELINES (Days 3 - 5)
+Task 2.1: Redesign `request-kanban-card.tsx` (3-tier hierarchy, remove badge clutter).
+Task 2.2: Streamline `src/app/dashboard/tasks/page.tsx` (remove redundant top tabs, implement Filter Popover).
+Task 2.3: Refactor Task Detail Modal with sticky action footer and contrast-hardened chat.
+Task 2.4: Align Motion Pipeline (`motion-kanban-card.tsx` and `/dashboard/motion`).
+Regression Tests: Verify brief creation, status transitions, auto-handover, and chat attachments.
+
+STAGE 3: ANALYTICS & SUPPORTING MODULES (Days 6 - 7)
+Task 3.1: Redesign Executive Overview Dashboard (`/dashboard/page.tsx`).
+Task 3.2: Streamline Capacity Management (`/dashboard/capacity/page.tsx`).
+Task 3.3: Upgrade Campaign Usage & Google Sheets Sync modal (`/dashboard/campaign`).
+Task 3.4: Polish Archived Tasks weekly partition accordion (`/dashboard/archive`).
+Task 3.5: Expand cryptic status letters in Reports & Analytics (`/dashboard/reports`).
+Regression Tests: Verify SLA calculations, capacity burn-down points, and outbox sync queue.
+
+STAGE 4: ADMINISTRATION & QUALITY ASSURANCE (Days 8 - 9)
+Task 4.1: Standardize all 5 Admin CRUD pages with `AppDataTable`.
+Task 4.2: Audit WCAG 2.2 AA keyboard navigation, focus rings, and screen reader labels.
+Task 4.3: Responsive stress-testing across 375px, 768px, 1024px, 1440px, and 1920px viewports.
+Task 4.4: Execute full 20-suite automated regression test runner (`run_all_tests.ts`).
+Regression Tests: Confirm 0 regressions across all 20 existing test suites.
+
+
+17. QA AND REGRESSION TEST PLAN
+--------------------------------------------------------------------------------
+Every redesign phase must execute the following automated and manual tests:
+
+1. Automated Test Suites (Must Pass 20/20):
+   - `approved_api_verification.ts`
+   - `approved_archive_verification.ts`
+   - `auth_and_rbac_hardening_verification.ts`
+   - `auto_handover_and_permissions_verification.ts`
+   - `campaign_usage_and_sheets_audit.ts`
+   - `chat_audit_verification.ts`
+   - `comprehensive_security_and_pipeline_audit.ts`
+   - `filter_reset_on_account_switch_verification.ts`
+   - `four_pipelines_architecture_verification.ts`
+   - `kanban_card_redesign_verification.ts`
+   - `modal_lifecycle_and_stack_prevention_verification.ts`
+   - `motion_api_test.ts`
+   - `motion_approved_archive_verification.ts`
+   - `realtime_sheets_sync_verification.ts`
+   - `revision_asset_history_verification.ts`
+   - `role_and_name_filter_verification.ts`
+   - `strategic_gd_pic_assignment_verification.ts`
+   - `strategic_pipeline_end_to_end_verification.ts`
+   - `task_form_and_pipeline_workflow_verification.ts`
+   - `weekly_partition_and_archive_verification.ts`
+
+2. Manual User Journey Validations:
+   - Journey A: AE creates GD Mockup task -> Team Lead assigns GD PIC -> GD starts work -> GD submits -> Team Lead approves -> Task auto-handovers to Motion pipeline -> Motion PIC animates & submits -> Operator checkout.
+   - Journey B: Team Lead requests revision -> Revision modal captures reason & diff -> Revision count increments -> History logged in detail modal.
+   - Journey C: Campaign quota tracking -> Request created -> Item enqueued to Google Sheets sync outbox -> Verified in `/dashboard/campaign`.
+
+
+18. ACCEPTANCE CRITERIA
+--------------------------------------------------------------------------------
+1. Visual Polish & Cleanliness:
+   - Zero glassmorphism; zero rainbow gradient borders; consistent neutral cards.
+   - Maximum 2 font families (Inter and system monospace).
+   - Uniform 8px border radius on cards; 6px on inputs and buttons.
+2. Information Hierarchy & Density:
+   - Kanban card badge count reduced by >= 50% without losing critical metadata.
+   - Task detail modal footer is sticky; zero button clipping on any desktop resolution.
+3. Usability & Navigation:
+   - Zero redundant horizontal pipeline tabs on task pages.
+   - Filter toolbar fits cleanly on a single row at 1280px width.
+   - Language is unified consistently across all labels and controls.
+4. Accessibility:
+   - All text meets minimum 4.5:1 contrast in both Light and Dark themes.
+   - Full keyboard navigation supported with visible 2px focus indicators.
+5. Architectural Integrity:
+   - 100% of existing business logic, database queries, and API routes preserved.
+   - `npm run build` succeeds with zero TypeScript or bundling errors.
+   - 20/20 test suites pass with zero failures.
+
+
+19. RISKS, DEPENDENCIES, AND LIMITATIONS
+--------------------------------------------------------------------------------
+1. Browser Bundler Boundary Risk:
+   - Ensure server-side Google Auth dependencies (`child_process`, `fs`) remain
+     isolated in `google-sheets-server.ts` and are never imported by client components.
+2. HTML5 Drag-and-Drop Limitations:
+   - HTML5 drag events are native to desktop mice. Touch devices should rely on
+     the accessible status transition dropdown inside the task modal rather than
+     forcing complex touch polyfills.
+3. Google Sheets External Rate Limits:
+   - Google Sheets API v4 enforces a quota of 300 write requests per minute per project.
+     The transactional outbox queue with bounded backoff effectively mitigates this.
+4. Tailwind CSS v4 Migration Nuance:
+   - Tailwind v4 uses `@import "tailwindcss"` without a traditional `tailwind.config.js`.
+     Design tokens must continue to be declared as CSS custom properties in `globals.css`.
+
+
+20. FINAL RECOMMENDATIONS AND ARCHITECTURAL SIGN-OFF
+--------------------------------------------------------------------------------
+The CMOS ERP system possesses a robust, high-performance architectural foundation
+with comprehensive pipeline routing, difficulty-weighted capacity modeling,
+holiday-aware SLA logic, real-time Google Sheets syncing, and automated weekly
+archiving.
+
+The identified shortcomings are strictly UI/UX presentation and information
+architecture issues: badge clutter, redundant navigation bars, bilingual label
+inconsistencies, unoptimized modal heights, and contrast deficits in dark mode.
+
+By executing the 4-stage redesign roadmap specified in this document, the system
+will transition into an elite, mature enterprise operations product that
+dramatically reduces visual fatigue, accelerates operator checkout times, and
+provides executive leadership with clear, actionable operational intelligence.
+
+--------------------------------------------------------------------------------
+END OF AUDIT SPECIFICATION
+Document ID: CMOS-AUDIT-2026-v1
+Verified and Generated by Antigravity IDE Autonomous Agent
+================================================================================

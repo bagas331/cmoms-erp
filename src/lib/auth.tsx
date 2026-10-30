@@ -87,6 +87,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const matched = allUsers.find(
         (u) =>
           u.email.toLowerCase() === cleanEmail &&
+          u.is_active !== false &&
           (u.password_hash === password ||
             !u.password_hash ||
             password === `${u.email.split('@')[0]}123` ||
@@ -108,6 +109,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    try {
+      fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    } catch {
+      // ignore
+    }
     clearPersistedFilterState();
     setUser(null);
     localStorage.removeItem('cmoms_current_user');

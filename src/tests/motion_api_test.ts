@@ -19,13 +19,17 @@ async function testApi() {
   console.log('Total items in response:', json.data?.length);
 
   if (res.status === 200 && json.success) {
-    console.log('✅ /api/motion/approved API route verified successfully!');
+    console.log('[PASS] /api/motion/approved API route verified successfully!');
   } else {
     throw new Error('API route test failed');
   }
 }
 
-testApi().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+testApi()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch(err => {
+    console.error(err);
+    process.exit(1);
+  });

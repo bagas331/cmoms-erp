@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
+import { signSessionToken } from '@/lib/server-auth';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
@@ -86,13 +87,39 @@ export async function POST(req: Request) {
       );
     }
 
+    if (user.is_active === false) {
+      return NextResponse.json(
+        { success: false, message: 'Akun Anda telah dinonaktifkan. Silakan hubungi administrator.' },
+        { status: 403 }
+      );
+    }
+
     // Exclude password_hash from response
     const { password_hash, ...safeUser } = user;
 
-    return NextResponse.json({
+    // Issue signed session token
+    const token = signSessionToken({
+      id: user.id,
+      email: user.email,
+      role_name: user.role_name,
+    });
+
+    const response = NextResponse.json({
       success: true,
       user: safeUser,
+      token,
     });
+
+    // Set HTTP-only secure cookie
+    response.cookies.set('cmoms_session', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 86400 * 7, // 7 days
+    });
+
+    return response;
   } catch (err: any) {
     // Log internally, do not leak stack trace or internal details to client
     console.error('Authentication error:', err?.message || 'Unknown error');

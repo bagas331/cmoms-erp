@@ -1,24 +1,6 @@
 import { NextResponse } from 'next/server';
-import { markNotificationAsRead, markNotificationsRead, getNotifications, getUsers } from '@/lib/supabase-store';
-
-/**
- * Helper to resolve user from request headers or body.
- */
-async function resolveUser(req: Request, bodyUserId?: string) {
-  const userIdHeader = req.headers.get('x-user-id') || bodyUserId;
-  const userRoleHeader = req.headers.get('x-user-role');
-  const userNameHeader = req.headers.get('x-user-name');
-
-  if (userIdHeader) {
-    return {
-      id: userIdHeader,
-      role_name: userRoleHeader || 'MEMBER',
-      full_name: userNameHeader || 'User'
-    };
-  }
-
-  return null;
-}
+import { markNotificationAsRead, markNotificationsRead, getNotifications } from '@/lib/supabase-store';
+import { resolveAuthenticatedUser } from '@/lib/server-auth';
 
 /**
  * POST /api/notifications/read
@@ -27,16 +9,15 @@ async function resolveUser(req: Request, bodyUserId?: string) {
  */
 export async function POST(req: Request) {
   try {
-    const body = await req.json().catch(() => null);
-    const bodyUserId = body?.user_id;
-    const user = await resolveUser(req, bodyUserId);
-
+    const user = await resolveAuthenticatedUser(req);
     if (!user) {
       return NextResponse.json(
         { success: false, message: 'Autentikasi diperlukan' },
         { status: 401 }
       );
     }
+
+    const body = await req.json().catch(() => null);
 
     const { notification_id, mark_all } = body || {};
 

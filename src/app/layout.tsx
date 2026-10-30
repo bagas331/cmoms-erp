@@ -18,7 +18,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="id" suppressHydrationWarning>
-      <body className="relative min-h-screen bg-[var(--bg-primary)] overflow-x-hidden">
+      <body suppressHydrationWarning className="relative min-h-screen bg-[var(--bg-primary)] overflow-x-hidden">
         <ThemeProvider
           attribute="class"
           defaultTheme="system"

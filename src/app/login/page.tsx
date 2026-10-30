@@ -11,7 +11,8 @@ import { getInitials } from '@/lib/utils';
 import {
   Eye, EyeOff, LogIn, Shield, Users,
   AlertTriangle, Search, UserCheck,
-  Palette, Video, Lightbulb, Crown, Radio
+  Palette, Video, Lightbulb, Crown, Radio,
+  X
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -393,17 +394,21 @@ export default function LoginPage() {
 
             {/* Search Input */}
             <div style={{ position: 'relative', marginBottom: '10px' }}>
-              <Search
-                style={{
-                  position: 'absolute',
-                  left: '10px',
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  width: '13px',
-                  height: '13px',
-                  color: 'var(--text-muted)',
-                }}
-              />
+              {!searchAccountQuery && (
+                <Search
+                  style={{
+                    position: 'absolute',
+                    left: '10px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    width: '13px',
+                    height: '13px',
+                    color: 'var(--text-muted)',
+                    pointerEvents: 'none',
+                    transition: 'opacity 0.15s ease',
+                  }}
+                />
+              )}
               <input
                 type="text"
                 className="input"
@@ -411,15 +416,38 @@ export default function LoginPage() {
                 value={searchAccountQuery}
                 onChange={(e) => setSearchAccountQuery(e.target.value)}
                 style={{
-                  paddingLeft: '30px',
-                  paddingRight: '10px',
+                  paddingLeft: searchAccountQuery ? '10px' : '30px',
+                  paddingRight: searchAccountQuery ? '28px' : '10px',
                   paddingTop: '6px',
                   paddingBottom: '6px',
                   fontSize: '11.5px',
                   height: '32px',
                   borderRadius: '6px',
+                  transition: 'padding 0.15s ease',
                 }}
               />
+              {searchAccountQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchAccountQuery('')}
+                  style={{
+                    position: 'absolute',
+                    right: '8px',
+                    top: '50%',
+                    transform: 'translateY(-50%)',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    color: 'var(--text-muted)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  title="Clear"
+                >
+                  <X style={{ width: '12px', height: '12px' }} />
+                </button>
+              )}
             </div>
 
             {/* Role Filter Tabs */}

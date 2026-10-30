@@ -16,7 +16,7 @@ import { MotionTask, User } from '../lib/types';
 
 async function runMotionApprovedArchiveTestSuite() {
   console.log('====================================================');
-  console.log('🎬 RUNNING MOTION PIPELINE APPROVED ARCHIVE VERIFICATION');
+  console.log('[MOTION] RUNNING MOTION PIPELINE APPROVED ARCHIVE VERIFICATION');
   console.log('====================================================\n');
 
   let passedTests = 0;
@@ -25,10 +25,10 @@ async function runMotionApprovedArchiveTestSuite() {
   function assert(condition: boolean, testName: string, details?: string) {
     totalTests++;
     if (condition) {
-      console.log(`  ✅ [PASS] ${testName}`);
+      console.log(`  [PASS] ${testName}`);
       passedTests++;
     } else {
-      console.error(`  ❌ [FAIL] ${testName}`);
+      console.error(`  [FAIL] ${testName}`);
       if (details) console.error(`     Details: ${details}`);
     }
   }
@@ -162,17 +162,21 @@ async function runMotionApprovedArchiveTestSuite() {
   }
 
   console.log('\n====================================================');
-  console.log(`📊 TEST SUITE SUMMARY: ${passedTests} / ${totalTests} TESTS PASSED (${Math.round((passedTests / totalTests) * 100)}%)`);
+  console.log(`[REPORT] TEST SUITE SUMMARY: ${passedTests} / ${totalTests} TESTS PASSED (${Math.round((passedTests / totalTests) * 100)}%)`);
   console.log('====================================================\n');
 
   if (passedTests === totalTests) {
-    console.log('🎉 ALL TESTS PASSED! Motion Approved Archive is fully verified.');
+    console.log('[SUCCESS] ALL TESTS PASSED! Motion Approved Archive is fully verified.');
   } else {
     throw new Error(`${totalTests - passedTests} tests failed.`);
   }
 }
 
-runMotionApprovedArchiveTestSuite().catch(err => {
-  console.error('Test execution failed:', err);
-  process.exit(1);
-});
+runMotionApprovedArchiveTestSuite()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch(err => {
+    console.error('Test execution failed:', err);
+    process.exit(1);
+  });

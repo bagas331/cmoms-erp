@@ -4,7 +4,7 @@ import { TaskWithRelations, User } from '../lib/types';
 
 async function runApprovedArchiveTestSuite() {
   console.log('====================================================');
-  console.log('🧪 RUNNING APPROVED REQUEST ARCHIVE VERIFICATION SUITE');
+  console.log('[TEST] RUNNING APPROVED REQUEST ARCHIVE VERIFICATION SUITE');
   console.log('====================================================\n');
 
   let passedTests = 0;
@@ -13,10 +13,10 @@ async function runApprovedArchiveTestSuite() {
   function assert(condition: boolean, testName: string, details?: string) {
     totalTests++;
     if (condition) {
-      console.log(`  ✅ [PASS] ${testName}`);
+      console.log(`  [PASS] ${testName}`);
       passedTests++;
     } else {
-      console.error(`  ❌ [FAIL] ${testName}`);
+      console.error(`  [FAIL] ${testName}`);
       if (details) console.error(`     Details: ${details}`);
     }
   }
@@ -50,7 +50,7 @@ async function runApprovedArchiveTestSuite() {
     // Create a new task to test transition to approved
     const newTask = await createTask({
       client_id: 1,
-      campaign_name: 'Test Archive Campaign 2026',
+      campaign_name: 'SPECIAL CAMPAIGN',
       content_type_id: 1,
       task_source: 'ORCA',
       platform: 'TIKTOK',
@@ -166,17 +166,19 @@ async function runApprovedArchiveTestSuite() {
   }
 
   console.log('\n====================================================');
-  console.log(`📊 TEST SUITE SUMMARY: ${passedTests} / ${totalTests} TESTS PASSED (${Math.round((passedTests / totalTests) * 100)}%)`);
+  console.log(`[REPORT] TEST SUITE SUMMARY: ${passedTests} / ${totalTests} TESTS PASSED (${Math.round((passedTests / totalTests) * 100)}%)`);
   console.log('====================================================\n');
 
   if (passedTests === totalTests) {
-    console.log('🎉 ALL TESTS PASSED! Approved Request Archive is fully verified.');
+    console.log('[SUCCESS] ALL TESTS PASSED! Approved Request Archive is fully verified.');
   } else {
     throw new Error(`${totalTests - passedTests} tests failed.`);
   }
 }
 
-runApprovedArchiveTestSuite().catch(err => {
-  console.error('Test execution failed:', err);
-  process.exit(1);
-});
+runApprovedArchiveTestSuite()
+  .then(() => process.exit(0))
+  .catch(err => {
+    console.error('Test execution failed:', err);
+    process.exit(1);
+  });

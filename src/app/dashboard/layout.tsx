@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
+import { useEffect, useState, useRef, Suspense } from 'react';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth';
 import { useClickOutside } from '@/lib/use-click-outside';
@@ -14,31 +14,71 @@ import {
   Settings, Database, Calendar, LogOut, Bell,
   Building2, FileType, X, CheckCheck,
   MessageSquare, RefreshCw, AlertTriangle, CheckCircle2,
-  PanelLeftClose, PanelLeftOpen
+  PanelLeftClose, PanelLeftOpen, Compass, Layers, ShoppingBag, Archive,
+  CalendarDays, TrendingUp, ShieldCheck, Plus
 } from 'lucide-react';
 import { formatRelativeTime } from '@/lib/utils';
 import { ThemeToggle } from '@/components/theme-toggle';
 
-const NAV_ITEMS = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'DESIGNER', 'MOTION_PIC', 'REQUESTER'] },
-  { href: '/dashboard/tasks', label: 'Mockup Pipeline', icon: ClipboardList, roles: ['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'DESIGNER', 'REQUESTER'] },
-  { href: '/dashboard/motion', label: 'Motion Pipeline', icon: Film, roles: ['ADMIN', 'TEAM_LEAD', 'MOTION_PIC', 'REQUESTER', 'STRATEGIC_PIC'] },
-  { href: '/dashboard/capacity', label: 'Workload & Capacity', icon: Users, roles: ['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'DESIGNER', 'MOTION_PIC'] },
-  { href: '/dashboard/reports', label: 'Reports & Analytics', icon: BarChart3, roles: ['ADMIN', 'TEAM_LEAD'] },
+const ALL_TEAM_ROLES = ['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'DESIGNER', 'MOTION_PIC', 'REQUESTER', 'OPERATOR'];
+
+export interface NavItemConfig {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ style?: React.CSSProperties; className?: string }>;
+  roles: string[];
+}
+
+export interface NavSectionConfig {
+  key: string;
+  title: string;
+  items: NavItemConfig[];
+}
+
+const NAV_SECTIONS: NavSectionConfig[] = [
+  {
+    key: 'OPERATIONS',
+    title: 'OPERATIONS',
+    items: [
+      { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ALL_TEAM_ROLES },
+      { href: '/dashboard/tasks?pipeline=STRATEGIC', label: 'Strategic Pipeline', icon: Compass, roles: ALL_TEAM_ROLES },
+      { href: '/dashboard/tasks?pipeline=GD_MOCKUP', label: 'GD Mockup Pipeline', icon: Layers, roles: ALL_TEAM_ROLES },
+      { href: '/dashboard/tasks?pipeline=GD_NON_MOCKUP', label: 'GD E-Commerce Pipeline', icon: ShoppingBag, roles: ALL_TEAM_ROLES },
+      { href: '/dashboard/motion', label: 'Motion Pipeline', icon: Film, roles: ALL_TEAM_ROLES },
+    ],
+  },
+  {
+    key: 'MANAGEMENT',
+    title: 'MANAGEMENT',
+    items: [
+      { href: '/dashboard/campaign', label: 'Campaign Usage', icon: BarChart3, roles: ALL_TEAM_ROLES },
+      { href: '/dashboard/capacity', label: 'Workload & Capacity', icon: Users, roles: ALL_TEAM_ROLES },
+      { href: '/dashboard/reports', label: 'Reports & Analytics', icon: TrendingUp, roles: ALL_TEAM_ROLES },
+      { href: '/dashboard/reports/issues', label: 'Reporting Kendala', icon: AlertTriangle, roles: ALL_TEAM_ROLES },
+      { href: '/dashboard/motion?tab=archive', label: 'Archived Tasks', icon: Archive, roles: ALL_TEAM_ROLES },
+    ],
+  },
+  {
+    key: 'ADMINISTRATION',
+    title: 'ADMINISTRATION',
+    items: [
+      { href: '/dashboard/admin/clients', label: 'Clients & Brands', icon: Building2, roles: ['ADMIN', 'TEAM_LEAD'] },
+      { href: '/dashboard/admin/content-types', label: 'Content Types', icon: FileType, roles: ['ADMIN', 'TEAM_LEAD'] },
+      { href: '/dashboard/admin/holidays', label: 'Holiday Calendar', icon: Calendar, roles: ['ADMIN', 'TEAM_LEAD'] },
+      { href: '/dashboard/admin/users', label: 'User Management', icon: ShieldCheck, roles: ['ADMIN', 'TEAM_LEAD'] },
+      { href: '/dashboard/admin/audit', label: 'Audit Trail', icon: Database, roles: ['ADMIN'] },
+    ],
+  },
 ];
 
-const ADMIN_ITEMS = [
-  { href: '/dashboard/admin/clients', label: 'Clients / Brands', icon: Building2, roles: ['ADMIN', 'TEAM_LEAD'] },
-  { href: '/dashboard/admin/content-types', label: 'Content Types', icon: FileType, roles: ['ADMIN', 'TEAM_LEAD'] },
-  { href: '/dashboard/admin/holidays', label: 'Holiday Calendar', icon: Calendar, roles: ['ADMIN', 'TEAM_LEAD'] },
-  { href: '/dashboard/admin/users', label: 'User Management', icon: Settings, roles: ['ADMIN', 'TEAM_LEAD'] },
-  { href: '/dashboard/admin/audit', label: 'Audit Trail', icon: Database, roles: ['ADMIN'] },
-];
+const NAV_ITEMS = [...NAV_SECTIONS[0].items, ...NAV_SECTIONS[1].items];
+const ADMIN_ITEMS = NAV_SECTIONS[2].items;
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
   const { user, logout, isAuthenticated, isLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotif, setShowNotif] = useState(false);
   const [notifCategory, setNotifCategory] = useState<'all' | 'messages' | 'status' | 'revisions'>('all');
@@ -129,8 +169,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   const unreadCount = notifications.filter(n => !n.read).length;
-  const filteredNav = NAV_ITEMS.filter(item => item.roles.includes(user.role_name));
-  const filteredAdmin = ADMIN_ITEMS.filter(item => item.roles.includes(user.role_name));
+  const filteredSections = NAV_SECTIONS.map(section => ({
+    ...section,
+    items: section.items.filter(item => item.roles.includes(user.role_name))
+  })).filter(section => section.items.length > 0);
+
+  const allVisibleNavItems = filteredSections.flatMap(s => s.items);
 
   const handleLogout = () => {
     logout();
@@ -186,53 +230,35 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       </div>
 
       {/* Navigation */}
-      <nav style={{ padding: '12px 0', flex: 1, display: 'flex', flexDirection: 'column', gap: '4px', overflowY: 'auto' }} className="custom-scrollbar">
-        {!isMini ? (
-          <div style={{ padding: '0 16px', marginBottom: '4px' }}>
-            <p style={{ fontSize: '10px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
-              Main Menu
-            </p>
-          </div>
-        ) : (
-          <div style={{ padding: '0 12px', marginBottom: '4px' }}>
-            <div style={{ borderTop: '1px solid var(--border-primary)', margin: '4px 0' }} />
-          </div>
-        )}
-        
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', padding: isMini ? '0 6px' : '0 8px' }}>
-          {filteredNav.map(item => {
-            const isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href));
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={`sidebar-link ${isActive ? 'active' : ''}`}
-                title={isMini ? item.label : undefined}
-                onClick={() => setShowMobileSidebar(false)}
-              >
-                <item.icon style={{ width: '16px', height: '16px', strokeWidth: isActive ? '2.5' : '2', flexShrink: 0 }} />
-                {!isMini && <span>{item.label}</span>}
-              </Link>
-            );
-          })}
-        </div>
-
-        {filteredAdmin.length > 0 && (
-          <>
+      <nav style={{ padding: '12px 0', flex: 1, display: 'flex', flexDirection: 'column', gap: '6px', overflowY: 'auto' }} className="custom-scrollbar">
+        {filteredSections.map((section, sIdx) => (
+          <div key={section.key} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
             {!isMini ? (
-              <div style={{ padding: '0 16px', marginTop: '16px', marginBottom: '4px' }}>
-                <p style={{ fontSize: '10px', fontWeight: '600', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
-                  Administration
+              <div style={{ padding: sIdx === 0 ? '0 16px 4px 16px' : '10px 16px 4px 16px' }}>
+                <p style={{ fontSize: '10px', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--text-muted)', margin: 0 }}>
+                  {section.title}
                 </p>
               </div>
             ) : (
-              <div style={{ padding: '0 12px', margin: '8px 0 4px 0' }}>
-                <div style={{ borderTop: '1px solid var(--border-primary)' }} />
+              <div style={{ padding: '0 12px', margin: sIdx === 0 ? '0 0 4px 0' : '6px 0 4px 0' }}>
+                {sIdx > 0 && <div style={{ borderTop: '1px solid var(--border-primary)', marginBottom: '4px' }} />}
               </div>
             )}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', padding: isMini ? '0 6px' : '0 8px' }}>
-              {filteredAdmin.map(item => {
-                const isActive = pathname === item.href;
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', padding: isMini ? '0 6px' : '0 10px' }}>
+              {section.items.map(item => {
+                let isActive = false;
+                if (item.href === '/dashboard') {
+                  isActive = pathname === '/dashboard';
+                } else if (item.href.startsWith('/dashboard/tasks?pipeline=')) {
+                  const targetPipe = item.href.split('pipeline=')[1];
+                  const curPipe = searchParams?.get('pipeline') || 'GD_MOCKUP';
+                  isActive = pathname === '/dashboard/tasks' && curPipe === targetPipe;
+                } else if (item.href === '/dashboard/motion') {
+                  isActive = pathname === '/dashboard/motion';
+                } else {
+                  isActive = pathname === item.href || (item.href !== '/dashboard' && pathname.startsWith(item.href));
+                }
                 return (
                   <Link
                     key={item.href}
@@ -242,19 +268,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                     onClick={() => setShowMobileSidebar(false)}
                   >
                     <item.icon style={{ width: '16px', height: '16px', strokeWidth: isActive ? '2.5' : '2', flexShrink: 0 }} />
-                    {!isMini && <span>{item.label}</span>}
+                    {!isMini && <span className="truncate">{item.label}</span>}
                   </Link>
                 );
               })}
             </div>
-          </>
-        )}
+          </div>
+        ))}
       </nav>
 
       {/* User Profile Footer */}
       <div
         style={{
-          padding: isMini ? '12px 6px' : '12px 12px',
+          padding: isMini ? '8px 4px' : '8px 12px',
           borderTop: '1px solid var(--border-primary)',
         }}
       >
@@ -263,15 +289,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             display: 'flex',
             alignItems: 'center',
             justifyContent: isMini ? 'center' : 'space-between',
-            gap: isMini ? '0' : '10px',
-            padding: isMini ? '4px 0' : '8px',
+            gap: isMini ? '0' : '8px',
+            padding: isMini ? '2px 0' : '4px 6px',
             borderRadius: '6px',
           }}
         >
           <div
             style={{
-              width: '32px',
-              height: '32px',
+              width: '28px',
+              height: '28px',
               borderRadius: '6px',
               display: 'flex',
               alignItems: 'center',
@@ -287,31 +313,45 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             {user.avatar_initials}
           </div>
           {!isMini && (
-            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>
-              <p style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.2 }}>
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '1px' }}>
+              <p style={{ fontSize: '12px', fontWeight: '600', color: 'var(--text-primary)', margin: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.2 }}>
                 {user.full_name}
               </p>
-              <span className={`badge ${ROLE_COLORS[user.role_name]}`} style={{ fontSize: '10px', padding: '1px 5px', alignSelf: 'flex-start' }}>
+              <span className={`badge ${ROLE_COLORS[user.role_name]}`} style={{ fontSize: '9px', padding: '0 4px', alignSelf: 'flex-start', lineHeight: '1.4' }}>
                 {ROLE_LABELS[user.role_name]}
               </span>
             </div>
           )}
           {!isMini ? (
-            <button onClick={handleLogout} className="btn-ghost" style={{ padding: '6px', borderRadius: '6px' }} title="Logout">
-              <LogOut style={{ width: '16px', height: '16px' }} />
+            <button onClick={handleLogout} className="btn-ghost" style={{ padding: '4px', borderRadius: '4px' }} title="Logout">
+              <LogOut style={{ width: '15px', height: '15px' }} />
             </button>
           ) : null}
         </div>
         {isMini && (
-          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '4px' }}>
-            <button onClick={handleLogout} className="btn-ghost" style={{ padding: '6px', borderRadius: '6px' }} title="Logout">
-              <LogOut style={{ width: '15px', height: '15px' }} />
+          <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2px' }}>
+            <button onClick={handleLogout} className="btn-ghost" style={{ padding: '4px', borderRadius: '4px' }} title="Logout">
+              <LogOut style={{ width: '14px', height: '14px' }} />
             </button>
           </div>
         )}
       </div>
     </>
   );
+
+  const currentPipelineParam = searchParams?.get('pipeline');
+  const pageTitle = (() => {
+    if (pathname === '/dashboard/tasks') {
+      if (currentPipelineParam === 'STRATEGIC') return 'Strategic Pipeline';
+      if (currentPipelineParam === 'GD_NON_MOCKUP') return 'GD E-Commerce Pipeline';
+      return 'GD Mockup Pipeline';
+    }
+    if (pathname === '/dashboard/motion') return 'Motion Pipeline';
+    return (
+      allVisibleNavItems.find(n => pathname === n.href || (n.href !== '/dashboard' && pathname.startsWith(n.href)))?.label
+      || 'Dashboard'
+    );
+  })();
 
   return (
     <div style={{ background: 'var(--bg-primary)' }}>
@@ -324,7 +364,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       {showMobileSidebar && (
         <div className="fixed inset-0 z-50 lg:hidden">
           <div className="absolute inset-0 bg-black/40" onClick={() => setShowMobileSidebar(false)} />
-          <aside className="absolute left-0 top-0 bottom-0 w-[248px] flex flex-col" style={{ background: 'var(--bg-secondary)', borderRight: '1px solid var(--border-primary)' }}>
+          <aside className="absolute left-0 top-0 bottom-0 w-[270px] flex flex-col" style={{ background: 'var(--bg-secondary)', borderRight: '1px solid var(--border-primary)' }}>
             <button onClick={() => setShowMobileSidebar(false)} className="absolute top-3 right-3 btn-ghost p-1">
               <X className="w-4 h-4" />
             </button>
@@ -352,10 +392,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             {isCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
           </button>
 
-          <h2 style={{ fontSize: '14px', fontWeight: '600', color: 'var(--text-primary)', margin: 0 }}>
-            {filteredNav.find(n => pathname === n.href || (n.href !== '/dashboard' && pathname.startsWith(n.href)))?.label
-              || filteredAdmin.find(n => pathname === n.href)?.label
-              || 'Dashboard'}
+          <h2 style={{ fontSize: '13px', fontWeight: '600', color: 'var(--text-primary)', margin: 0, letterSpacing: '-0.2px' }}>
+            {pageTitle}
           </h2>
         </div>
 
@@ -566,3 +604,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     </div>
   );
 }
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center h-screen" style={{ background: 'var(--bg-primary)' }}>
+          <div className="w-8 h-8 border-2 rounded-full animate-spin" style={{ borderColor: 'var(--border-primary)', borderTopColor: 'var(--accent-blue)' }} />
+        </div>
+      }
+    >
+      <DashboardLayoutContent>{children}</DashboardLayoutContent>
+    </Suspense>
+  );
+}
+

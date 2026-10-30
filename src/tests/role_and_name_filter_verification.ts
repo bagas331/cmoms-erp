@@ -90,28 +90,28 @@ async function runVerification() {
   // Test 1: Filter Mockup Tasks by Role = DESIGNER
   const designerTasks = sampleTasks.filter(t => Boolean(t.design_pic_id));
   if (designerTasks.length === 2) {
-    console.log('✓ [PASS] Test 1: Role filter "DESIGNER" matches all tasks assigned to a designer');
+    console.log('[PASS] Test 1: Role filter "DESIGNER" matches all tasks assigned to a designer');
     passCount++;
   } else {
-    console.error('✗ [FAIL] Test 1: Expected 2 tasks, got', designerTasks.length);
+    console.error('[FAIL] Test 1: Expected 2 tasks, got', designerTasks.length);
   }
 
   // Test 2: Filter Mockup Tasks by Specific User (Ahmad Designer)
   const ahmadTasks = sampleTasks.filter(t => t.design_pic_id === 'usr-des-1');
   if (ahmadTasks.length === 1 && ahmadTasks[0].task_code === 'REQ-2026-0001') {
-    console.log('✓ [PASS] Test 2: User filter "Ahmad Designer" matches only task REQ-2026-0001');
+    console.log('[PASS] Test 2: User filter "Ahmad Designer" matches only task REQ-2026-0001');
     passCount++;
   } else {
-    console.error('✗ [FAIL] Test 2: User filter failed');
+    console.error('[FAIL] Test 2: User filter failed');
   }
 
   // Test 3: Filter Mockup Tasks by Role = STRATEGIC_PIC
   const stratTasks = sampleTasks.filter(t => Boolean(t.strat_pic_id || t.requires_strategic_concept));
   if (stratTasks.length === 1 && stratTasks[0].task_code === 'REQ-2026-0001') {
-    console.log('✓ [PASS] Test 3: Role filter "STRATEGIC_PIC" matches tasks requiring strategic concept');
+    console.log('[PASS] Test 3: Role filter "STRATEGIC_PIC" matches tasks requiring strategic concept');
     passCount++;
   } else {
-    console.error('✗ [FAIL] Test 3: Strategic filter failed');
+    console.error('[FAIL] Test 3: Strategic filter failed');
   }
 
   // Test 4: Filter Motion Tasks by Motion PIC
@@ -150,19 +150,19 @@ async function runVerification() {
 
   const rezaMotionTasks = sampleMotionTasks.filter(mt => mt.motion_pic_id === 'usr-mot-1');
   if (rezaMotionTasks.length === 1 && rezaMotionTasks[0].id === 'mot-1') {
-    console.log('✓ [PASS] Test 4: Motion user filter "Reza Motion" matches mot-1');
+    console.log('[PASS] Test 4: Motion user filter "Reza Motion" matches mot-1');
     passCount++;
   } else {
-    console.error('✗ [FAIL] Test 4: Motion user filter failed');
+    console.error('[FAIL] Test 4: Motion user filter failed');
   }
 
   // Test 5: Filter Motion Tasks by Role = OPERATOR
   const opMotionTasks = sampleMotionTasks.filter(mt => Boolean(mt.operator_id));
   if (opMotionTasks.length === 1 && opMotionTasks[0].id === 'mot-2') {
-    console.log('✓ [PASS] Test 5: Motion role filter "OPERATOR" matches mot-2');
+    console.log('[PASS] Test 5: Motion role filter "OPERATOR" matches mot-2');
     passCount++;
   } else {
-    console.error('✗ [FAIL] Test 5: Operator role filter failed');
+    console.error('[FAIL] Test 5: Operator role filter failed');
   }
 
   console.log(`\n======================================================`);

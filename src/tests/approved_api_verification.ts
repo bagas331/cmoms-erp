@@ -2,7 +2,7 @@ import { GET } from '../app/api/requests/approved/route';
 
 async function runApiVerification() {
   console.log('====================================================');
-  console.log('🧪 RUNNING APPROVED REQUESTS API (/api/requests/approved) VERIFICATION');
+  console.log('[TEST] RUNNING APPROVED REQUESTS API (/api/requests/approved) VERIFICATION');
   console.log('====================================================\n');
 
   let passed = 0;
@@ -11,10 +11,10 @@ async function runApiVerification() {
   function assert(condition: boolean, name: string, detail?: string) {
     total++;
     if (condition) {
-      console.log(`  ✅ [PASS] ${name}`);
+      console.log(`  [PASS] ${name}`);
       passed++;
     } else {
-      console.error(`  ❌ [FAIL] ${name}`);
+      console.error(`  [FAIL] ${name}`);
       if (detail) console.error(`     Detail: ${detail}`);
     }
   }
@@ -91,15 +91,17 @@ async function runApiVerification() {
     ), 'Search matches target text accurately');
   }
 
-  console.log(`\n📊 API TEST RESULTS: ${passed} / ${total} TESTS PASSED`);
+  console.log(`\n[REPORT] API TEST RESULTS: ${passed} / ${total} TESTS PASSED`);
   if (passed === total) {
-    console.log('🎉 ALL API TESTS PASSED!');
+    console.log('[SUCCESS] ALL API TESTS PASSED!');
   } else {
     throw new Error('Some API tests failed.');
   }
 }
 
-runApiVerification().catch(err => {
-  console.error('API Test failed:', err);
-  process.exit(1);
-});
+runApiVerification()
+  .then(() => process.exit(0))
+  .catch(err => {
+    console.error('API Test failed:', err);
+    process.exit(1);
+  });

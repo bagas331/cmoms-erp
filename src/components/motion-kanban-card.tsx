@@ -11,7 +11,10 @@ import {
   RotateCcw,
   Undo2,
   ExternalLink,
-  Edit2
+  Edit2,
+  FileText,
+  Image as ImageIcon,
+  Trash2
 } from 'lucide-react';
 import {
   MotionStatus,
@@ -27,11 +30,13 @@ import {
   getDueDateSemanticStatus,
   getPriorityDetails,
   getSLAFormatted,
-  sanitizeUrl
+  sanitizeUrl,
+  canUserDeleteMotionTask
 } from '@/lib/utils';
 import {
   MOTION_DIFFICULTY_LABELS
 } from '@/lib/constants';
+import { canUserRestoreTask } from '@/lib/archive-engine';
 
 export type EnrichedMotionTask = MotionTask & { parentTask?: TaskWithRelations };
 
@@ -40,9 +45,10 @@ export interface MotionKanbanCardProps {
   isMovable?: boolean;
   isBeingDragged?: boolean;
   isArchive?: boolean;
+  isReadOnly?: boolean;
   clientName: string;
   picUser?: UserType | null;
-  user: UserType;
+  user?: UserType | null;
   onDragStart?: (e: React.DragEvent) => void;
   onDragEnd?: () => void;
   onClick?: () => void;
@@ -54,6 +60,8 @@ export interface MotionKanbanCardProps {
   onRevision?: (id: string) => void;
   onHandover?: (id: string) => void;
   onUndo?: (id: string, prevStatus: MotionStatus) => void;
+  onRestore?: (id: string) => void;
+  onDelete?: (motionTaskId: string, taskCode?: string, clientName?: string) => void;
 }
 
 const MOTION_DIFFICULTY_STYLES: Record<string, string> = {
@@ -68,6 +76,7 @@ export function MotionKanbanCard({
   isMovable = false,
   isBeingDragged = false,
   isArchive = false,
+  isReadOnly = false,
   clientName,
   picUser,
   user,
@@ -80,8 +89,11 @@ export function MotionKanbanCard({
   onSubmit,
   onRevision,
   onHandover,
-  onUndo
+  onUndo,
+  onRestore,
+  onDelete
 }: MotionKanbanCardProps) {
+  const canDelete = canUserDeleteMotionTask(user, mt);
   const isFinished = mt.status_motion === 'APPROVED' || mt.status_motion === 'COMPLETED';
   const targetDueDate = mt.parentTask?.due_date || mt.period_end || mt.production_date || mt.apply_date;
   const dueInfo = getDueDateSemanticStatus(targetDueDate, isFinished);
@@ -96,9 +108,17 @@ export function MotionKanbanCard({
   const approvalTimestamp = mt.approved_at || mt.apply_date || mt.updated_at || mt.created_at;
 
   const isStandalone = !mt.parentTask;
-  const isUserMotionPic = mt.motion_pic_id === user.id;
-  const isLeadOrAdmin = ['ADMIN', 'TEAM_LEAD'].includes(user.role_name);
-  const isReviewer = ['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'REQUESTER'].includes(user.role_name);
+
+  // Motion Brief & Objective image preview
+  const motionAttachments = mt.attachments?.length ? mt.attachments : (mt.parentTask?.attachments || []);
+  const briefAttachments = motionAttachments.filter(
+    att => (att.section === 'brief' || !att.section) &&
+           (!att.type || att.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|svg)$/i.test(att.url || att.name))
+  );
+  const primaryBriefImage = briefAttachments[0];
+  const isUserMotionPic = Boolean(user && mt.motion_pic_id === user.id);
+  const isLeadOrAdmin = Boolean(user && ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name));
+  const isReviewer = Boolean(user && ['ADMIN', 'TEAM_LEAD', 'STRATEGIC_PIC', 'REQUESTER'].includes(user.role_name));
 
   // Determine Undo prev status
   let prevUndoStatus: MotionStatus | null = null;
@@ -113,7 +133,9 @@ export function MotionKanbanCard({
   }
 
   const hasAnyActions =
+    !isReadOnly &&
     !isArchive &&
+
     ((isLeadOrAdmin && isStandalone) ||
       (mt.status_motion === 'QUEUED' && isLeadOrAdmin) ||
       (mt.status_motion === 'QUEUED' && mt.motion_pic_id && (isUserMotionPic || isLeadOrAdmin)) ||
@@ -186,6 +208,20 @@ export function MotionKanbanCard({
                 </span>
               </>
             )}
+
+            {canDelete && onDelete && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(mt.id, taskCode, clientName);
+                }}
+                className="opacity-0 group-hover:opacity-100 p-1 rounded text-[var(--text-muted)] hover:text-rose-400 hover:bg-rose-500/10 transition-all cursor-pointer"
+                title="Hapus tiket motion ini"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -215,26 +251,57 @@ export function MotionKanbanCard({
         {/* ============================================================
             LEVEL 3 & 4: WORK METADATA (Platform, Studio, Motion Type Chips)
             ============================================================ */}
-        <div className="flex flex-wrap items-center gap-1.5 mb-2.5">
+        <div className="flex flex-wrap items-center gap-1 mb-2">
           {/* Platform Chip */}
           {mt.platform && (
-            <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-semibold rounded-md bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border-secondary)]">
+            <span className="inline-flex items-center px-1.5 py-0.2 text-[9.5px] font-semibold rounded bg-[var(--bg-tertiary)] text-[var(--text-primary)] border border-[var(--border-secondary)]">
               {mt.platform}
             </span>
           )}
 
           {/* Studio Chip */}
           {mt.studio && (
-            <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-md bg-pink-500/10 text-pink-400 border border-pink-500/20">
+            <span className="inline-flex items-center px-1.5 py-0.2 text-[9.5px] font-medium rounded bg-pink-500/10 text-pink-400 border border-pink-500/20">
               {mt.studio}
             </span>
           )}
 
           {/* Motion Type Chip */}
           {mt.motion_type && (
-            <span className="inline-flex items-center px-2 py-0.5 text-[10px] font-medium rounded-md bg-blue-500/10 text-blue-400 border border-blue-500/20 truncate max-w-[150px]">
+            <span className="inline-flex items-center px-1.5 py-0.2 text-[9.5px] font-medium rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 truncate max-w-[140px]">
               {mt.motion_type}
             </span>
+          )}
+
+          {/* Concept Deck Link Button */}
+          {mt.parentTask?.strat_concept_link && (
+            <a
+              href={sanitizeUrl(mt.parentTask.strat_concept_link)}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center gap-0.5 px-1.5 py-0.2 text-[9px] font-semibold rounded bg-purple-500/10 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20 transition-colors"
+              title={mt.parentTask.strat_concept_name || "Buka Strategic Concept Deck"}
+            >
+              <FileText className="w-2.5 h-2.5" />
+              <span>Deck</span>
+              <ExternalLink className="w-2 h-2 ml-0.5" />
+            </a>
+          )}
+
+          {/* Asset GD Link Button */}
+          {mt.parentTask?.final_asset_link && (
+            <a
+              href={sanitizeUrl(mt.parentTask.final_asset_link)}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center gap-0.5 px-1.5 py-0.2 text-[9px] font-semibold rounded bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors"
+              title={mt.parentTask.final_asset_name || "Buka Asset Desain GD"}
+            >
+              <ExternalLink className="w-2.5 h-2.5" />
+              <span>Asset GD</span>
+            </a>
           )}
 
           {/* Render Output Link Button */}
@@ -244,77 +311,92 @@ export function MotionKanbanCard({
               target="_blank"
               rel="noopener noreferrer"
               onClick={(e) => e.stopPropagation()}
-              className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-semibold rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors"
+              className="inline-flex items-center gap-0.5 px-1.5 py-0.2 text-[9px] font-semibold rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors"
               title="Buka Output Video / Render"
             >
               <Film className="w-2.5 h-2.5" />
               <span>Render</span>
-              <ExternalLink className="w-2.5 h-2.5 ml-0.5" />
+              <ExternalLink className="w-2 h-2 ml-0.5" />
             </a>
           )}
         </div>
 
         {/* ============================================================
-            LEVEL 2: TIMELINE SECTION (DUE DATE & SLA / TARGET)
+            MOTION BRIEF & OBJECTIVE IMAGE PREVIEW BANNER
             ============================================================ */}
-        <div className="pt-2.5 border-t border-[var(--border-secondary)] mb-2.5">
-          {isArchive ? (
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)] block">
-                  Approved At
-                </span>
-                <div className="flex flex-col mt-0.5">
-                  <span className="text-xs font-semibold text-[var(--text-primary)]">
-                    {formatDisplayDate(approvalTimestamp)}
-                  </span>
-                  <span className="text-[9px] text-[var(--text-muted)] font-mono">
-                    {approvalTimestamp ? new Date(approvalTimestamp).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }).replace('.', ':') + ' WIB' : ''}
-                  </span>
+        {primaryBriefImage && (
+          <div className="mb-2.5 overflow-hidden rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-tertiary)] relative group/preview shadow-2xs">
+            <div className="relative w-full h-28 sm:h-32 bg-black/10 dark:bg-black/30 flex items-center justify-center overflow-hidden">
+              <img
+                src={primaryBriefImage.url.startsWith('http') || primaryBriefImage.url.startsWith('/') ? primaryBriefImage.url : `/${primaryBriefImage.url}`}
+                alt={primaryBriefImage.name || 'Motion Brief Preview'}
+                className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 pointer-events-none"
+                draggable={false}
+                loading="lazy"
+                onError={e => {
+                  (e.target as HTMLElement).style.display = 'none';
+                }}
+              />
+
+              {/* Centered Video / Teaser Icon (matching user's reference image!) */}
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-black/45 backdrop-blur-xs flex items-center justify-center text-white border border-white/20 shadow-md group-hover:scale-110 group-hover:bg-pink-600/70 transition-all">
+                  <Play className="w-3.5 h-3.5 fill-white translate-x-0.5" />
                 </div>
               </div>
 
-              <div>
-                <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)] block">
-                  Status / Studio
-                </span>
-                <div className="flex items-center gap-1.5 mt-1">
-                  <span className="text-xs font-semibold text-emerald-400">
-                    {mt.status_motion === 'COMPLETED' ? 'Completed' : 'Approved'}
-                  </span>
-                  {mt.studio && (
-                    <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-pink-500/10 text-pink-400 border border-pink-500/20">
-                      {mt.studio}
-                    </span>
-                  )}
+              {/* Multi-photo indicator badge if more than 1 photo */}
+              {briefAttachments.length > 1 && (
+                <div className="absolute bottom-1.5 right-1.5 z-10 flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-black/60 backdrop-blur-xs text-white text-[9px] font-semibold border border-white/10 shadow-xs pointer-events-none">
+                  <ImageIcon className="w-2.5 h-2.5" />
+                  <span>+{briefAttachments.length - 1} Foto</span>
                 </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ============================================================
+            LEVEL 2: TIMELINE SECTION (DUE DATE & SLA / TARGET)
+            ============================================================ */}
+        <div className="pt-2 border-t border-[var(--border-secondary)] mb-1.5">
+          {isArchive ? (
+            <div className="flex items-center justify-between gap-1.5 text-xs">
+              <div className="flex items-center gap-1">
+                <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)]">Approved:</span>
+                <span className="text-[11px] font-semibold text-[var(--text-primary)]">
+                  {formatDisplayDate(approvalTimestamp)}
+                </span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] font-semibold text-emerald-400">
+                  {mt.status_motion === 'COMPLETED' ? 'Completed' : 'Approved'}
+                </span>
+                {mt.studio && (
+                  <span className="text-[8.5px] font-semibold px-1 py-0.2 rounded bg-pink-500/10 text-pink-400 border border-pink-500/20">
+                    {mt.studio}
+                  </span>
+                )}
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-2">
-              {/* Due Date Column */}
-              <div>
-                <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)] block">
-                  Target Date
+            <div className="flex items-center justify-between gap-1.5 text-xs">
+              {/* Target Date */}
+              <div className="flex items-center gap-1 min-w-0">
+                <Clock className="w-3 h-3 text-[var(--text-muted)] shrink-0" />
+                <span className={`text-[11px] font-medium ${dueInfo.textClass}`}>
+                  {dueInfo.formattedDate}
                 </span>
-                <div className="flex items-center gap-1 mt-0.5 flex-wrap">
-                  <span className={`text-xs ${dueInfo.textClass}`}>
-                    {dueInfo.formattedDate}
+                {dueInfo.badge && (
+                  <span className={`text-[8px] px-1 py-0.2 rounded shrink-0 ${dueInfo.badgeClass}`}>
+                    {dueInfo.badge}
                   </span>
-                  {dueInfo.badge && (
-                    <span className={`text-[8px] px-1 py-0.2 rounded shrink-0 ${dueInfo.badgeClass}`}>
-                      {dueInfo.badge}
-                    </span>
-                  )}
-                </div>
+                )}
               </div>
 
-              {/* SLA / Target Column */}
-              <div>
-                <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)] block">
-                  SLA / Timeline
-                </span>
-                <span className={`text-xs font-medium mt-0.5 block ${slaInfo.isWarning ? 'text-rose-500 font-bold' : slaInfo.isCalculated ? 'text-[var(--text-primary)]' : 'text-[var(--text-muted)]'}`}>
+              {/* SLA / Target */}
+              <div className="shrink-0 text-[10.5px]">
+                <span className={`font-medium ${slaInfo.isWarning ? 'text-rose-500 font-bold' : slaInfo.isCalculated ? 'text-[var(--text-secondary)]' : 'text-[var(--text-muted)]'}`}>
                   {mt.parentTask ? slaInfo.text : mt.period_end ? `End: ${formatDisplayDate(mt.period_end)}` : 'Standard SLA'}
                 </span>
               </div>
@@ -323,49 +405,32 @@ export function MotionKanbanCard({
         </div>
 
         {/* ============================================================
-            LEVEL 3: PEOPLE SECTION (AE & Motion PIC)
+            LEVEL 3: PEOPLE SECTION (AE & MOTION PIC INLINE)
             ============================================================ */}
-        <div className="pt-2.5 border-t border-[var(--border-secondary)] space-y-1.5">
+        <div className="pt-1.5 border-t border-[var(--border-secondary)] flex items-center justify-between gap-1.5 text-xs">
           {/* AE (Requester) */}
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)]">
-              AE
+          <div className="flex items-center gap-1 min-w-0" title={`Requester: ${mt.parentTask?.created_by_name || 'AE'}`}>
+            <span className="text-[9px] uppercase font-bold text-[var(--text-muted)]">AE:</span>
+            <span className="text-[10.5px] font-medium text-[var(--text-secondary)] truncate max-w-[90px]">
+              {mt.parentTask?.created_by_name || 'AE'}
             </span>
-            <div className="flex items-center gap-1.5 truncate max-w-[150px]">
-              <div className="w-4 h-4 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border-secondary)] flex items-center justify-center text-[8px] font-bold text-[var(--text-secondary)] shrink-0">
-                {getInitials(mt.parentTask?.created_by_name || 'AE')}
-              </div>
-              <span className="text-xs font-medium text-[var(--text-secondary)] truncate">
-                {mt.parentTask?.created_by_name || 'AE'}
-              </span>
-            </div>
           </div>
 
           {/* Motion PIC */}
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-[9px] uppercase tracking-wider font-bold text-[var(--text-muted)]">
-              Motion PIC
-            </span>
-            <div className="flex items-center gap-1.5 truncate max-w-[150px]">
-              {picUser?.full_name ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                  <div className="w-4 h-4 rounded-full bg-pink-500/20 text-pink-400 border border-pink-500/30 flex items-center justify-center text-[8px] font-bold shrink-0">
-                    {getInitials(picUser.full_name)}
-                  </div>
-                  <span className="text-xs font-bold text-[var(--text-primary)] truncate">
-                    {picUser.full_name}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-500 shrink-0" />
-                  <span className="text-xs italic text-[var(--text-muted)]">
-                    Unassigned
-                  </span>
-                </>
-              )}
-            </div>
+          <div className="flex items-center gap-1 shrink-0">
+            {picUser?.full_name ? (
+              <div className="flex items-center gap-1" title={`Motion PIC: ${picUser.full_name}`}>
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                <div className="w-4 h-4 rounded-full bg-pink-500/20 text-pink-400 border border-pink-500/30 flex items-center justify-center text-[7.5px] font-bold shrink-0">
+                  {getInitials(picUser.full_name)}
+                </div>
+                <span className="text-[10.5px] font-semibold text-[var(--text-primary)] truncate max-w-[80px]">
+                  {picUser.full_name}
+                </span>
+              </div>
+            ) : (
+              <span className="text-[10px] italic text-[var(--text-muted)]">Unassigned</span>
+            )}
           </div>
         </div>
       </div>
@@ -375,7 +440,7 @@ export function MotionKanbanCard({
           ============================================================ */}
       {hasAnyActions && (
         <div
-          className="mt-2.5 pt-2 border-t border-[var(--border-secondary)] flex flex-wrap items-center gap-1.5"
+          className="mt-2 pt-1.5 border-t border-[var(--border-secondary)] flex flex-wrap items-center gap-1"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Edit Standalone */}
@@ -457,6 +522,28 @@ export function MotionKanbanCard({
               title="Rollback ke status sebelumnya"
             >
               <Undo2 className="w-3 h-3" /> Undo
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Archive / Restore Footer */}
+      {(isArchive || mt.is_archived) && (
+        <div className="mt-2.5 pt-2 border-t border-[var(--border-secondary)] flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
+            Arsip Motion ({mt.archive_period || 'Selesai'})
+          </span>
+          {user && canUserRestoreTask(user.role_name, user.id, mt) && onRestore && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onRestore(mt.id);
+              }}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/25 border border-emerald-500/30 transition-all shadow-sm"
+              title="Pulihkan motion task dari arsip ke board Motion aktif"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Restore</span>
             </button>
           )}
         </div>

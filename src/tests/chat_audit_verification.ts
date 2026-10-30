@@ -21,10 +21,10 @@ const results: TestResult[] = [];
 function assert(condition: boolean, suite: string, test: string, details?: string) {
   if (condition) {
     results.push({ suite, test, status: 'PASS', details });
-    console.log(`  ✓ [PASS] ${test}`);
+    console.log(`  [PASS] ${test}`);
   } else {
     results.push({ suite, test, status: 'FAIL', details: details || 'Assertion failed' });
-    console.error(`  ✗ [FAIL] ${test}: ${details}`);
+    console.error(`  [FAIL] ${test}: ${details}`);
   }
 }
 
@@ -654,11 +654,17 @@ async function runTestSuite() {
 
   if (failCount > 0) {
     process.exit(1);
+  } else {
+    process.exit(0);
   }
 }
 
-runTestSuite().catch(err => {
-  console.error('Fatal error during test suite:', err);
-  process.exit(1);
-});
+runTestSuite()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch(err => {
+    console.error('Fatal error during test suite:', err);
+    process.exit(1);
+  });
 
