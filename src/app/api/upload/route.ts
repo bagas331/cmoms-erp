@@ -5,15 +5,23 @@ import crypto from 'crypto';
 import { resolveAuthenticatedUser } from '@/lib/server-auth';
 import { verifyImageBufferServerSide, MAX_SECTION_IMAGES } from '@/lib/image-upload-utils';
 import { TaskAttachment, AttachmentSection } from '@/lib/types';
-import { supabase, isSupabaseConfigured } from '@/lib/supabase';
+import { supabase, supabaseAdmin, isSupabaseConfigured } from '@/lib/supabase';
 
-// Ensure public upload directory exists
+// Ensure public upload directory exists (used in local development)
 const UPLOAD_SUBDIR = path.join('uploads', 'tasks');
 const UPLOAD_FULL_DIR = path.join(process.cwd(), 'public', UPLOAD_SUBDIR);
 
-function ensureUploadDirExists() {
-  if (!fs.existsSync(UPLOAD_FULL_DIR)) {
-    fs.mkdirSync(UPLOAD_FULL_DIR, { recursive: true });
+function trySaveToLocalDisk(destinationPath: string, buffer: Buffer): boolean {
+  try {
+    if (!fs.existsSync(UPLOAD_FULL_DIR)) {
+      fs.mkdirSync(UPLOAD_FULL_DIR, { recursive: true });
+    }
+    fs.writeFileSync(destinationPath, buffer);
+    return true;
+  } catch (fsErr) {
+    // Expected on serverless environments like Vercel (read-only filesystem)
+    console.warn('[Upload] Local filesystem write skipped (serverless read-only mode):', fsErr);
+    return false;
   }
 }
 
@@ -74,8 +82,6 @@ export async function POST(req: Request) {
       );
     }
 
-    ensureUploadDirExists();
-
     const uploadedAttachments: TaskAttachment[] = [];
 
     for (const file of rawFiles) {
@@ -99,15 +105,14 @@ export async function POST(req: Request) {
       const safeFileName = `req_${section}_${uniqueSuffix}.${verification.ext}`;
       const destinationPath = path.join(UPLOAD_FULL_DIR, safeFileName);
 
-      // 3. Save to local public storage
-      fs.writeFileSync(destinationPath, buffer);
+      let publicUrl = '';
+      let storageUploaded = false;
 
-      let publicUrl = `/${UPLOAD_SUBDIR.replace(/\\/g, '/')}/${safeFileName}`;
-
-      // 4. If Supabase Storage is configured, sync to bucket as well (graceful fallback)
-      if (isSupabaseConfigured() && supabase) {
+      // 3. Primary Storage: Supabase Storage Bucket (Persistent across serverless deploys & multi-instance)
+      const storageClient = supabaseAdmin || supabase;
+      if (storageClient) {
         try {
-          const { data: uploadData, error: sbError } = await supabase.storage
+          const { data: uploadData, error: sbError } = await storageClient.storage
             .from('task-attachments')
             .upload(`${section}/${safeFileName}`, buffer, {
               contentType: verification.mimeType,
@@ -115,15 +120,35 @@ export async function POST(req: Request) {
             });
 
           if (!sbError && uploadData?.path) {
-            const { data: pubData } = supabase.storage
+            const { data: pubData } = storageClient.storage
               .from('task-attachments')
               .getPublicUrl(uploadData.path);
             if (pubData?.publicUrl) {
               publicUrl = pubData.publicUrl;
+              storageUploaded = true;
             }
+          } else if (sbError) {
+            console.warn('[Upload] Supabase storage upload failed:', sbError.message);
           }
         } catch (sbErr) {
-          console.warn('Supabase storage upload skipped, using local filesystem:', sbErr);
+          console.warn('[Upload] Supabase storage upload exception:', sbErr);
+        }
+      }
+
+      // 4. Fallback / Local Development: Save to local public disk if possible
+      const localSaved = trySaveToLocalDisk(destinationPath, buffer);
+      if (!storageUploaded) {
+        if (localSaved) {
+          publicUrl = `/${UPLOAD_SUBDIR.replace(/\\/g, '/')}/${safeFileName}`;
+        } else {
+          // If neither Supabase storage nor local disk succeeded (e.g. Vercel without storage configured)
+          return NextResponse.json(
+            {
+              success: false,
+              message: 'Gagal menyimpan file: Penyimpanan cloud Supabase tidak dapat diakses dan filesystem serverless bersifat read-only.'
+            },
+            { status: 500 }
+          );
         }
       }
 
@@ -201,16 +226,23 @@ export async function DELETE(req: Request) {
       }
 
       if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    } else if (isSupabaseConfigured() && supabase && cleanUrl.includes('task-attachments')) {
-      try {
-        const parts = cleanUrl.split('task-attachments/');
-        if (parts[1]) {
-          await supabase.storage.from('task-attachments').remove([parts[1]]);
+        try {
+          fs.unlinkSync(filePath);
+        } catch (fsUnlinkErr) {
+          console.warn('[Upload] Failed to unlink local file (read-only filesystem):', fsUnlinkErr);
         }
-      } catch (sbDelErr) {
-        console.warn('Failed to delete from Supabase storage:', sbDelErr);
+      }
+    } else {
+      const storageClient = supabaseAdmin || supabase;
+      if (storageClient && cleanUrl.includes('task-attachments')) {
+        try {
+          const parts = cleanUrl.split('task-attachments/');
+          if (parts[1]) {
+            await storageClient.storage.from('task-attachments').remove([parts[1]]);
+          }
+        } catch (sbDelErr) {
+          console.warn('Failed to delete from Supabase storage:', sbDelErr);
+        }
       }
     }
 
