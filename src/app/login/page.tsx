@@ -510,7 +510,7 @@ export default function LoginPage() {
             >
               {filteredAccounts.length === 0 ? (
                 <div style={{ gridColumn: '1 / -1', padding: '20px 0', textAlign: 'center', color: 'var(--text-muted)', fontSize: '11.5px' }}>
-                  Tidak ada akun yang cocok dengan pencarian "{searchAccountQuery}"
+                  Tidak ada akun yang cocok dengan pencarian &quot;{searchAccountQuery}&quot;
                 </div>
               ) : (
                 filteredAccounts.map((acc) => {

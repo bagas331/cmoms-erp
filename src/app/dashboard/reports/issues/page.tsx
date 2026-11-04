@@ -25,6 +25,12 @@ import { getMonthName, formatDisplayDate } from '@/lib/utils';
 import { downloadCSV } from '@/lib/export';
 import { determineTaskPipeline } from '@/lib/pipeline-router';
 import {
+  isTaskActive,
+  isTaskDone,
+  isTaskPostponedOrCancelled,
+  isTaskArchived
+} from '@/lib/task-status';
+import {
   AlertTriangle, CheckCircle2, Calendar, Plus, Trash2, Edit3,
   ShieldAlert, ShieldCheck, ArrowLeft, Download, Filter, Search,
   Layers, Compass, ShoppingBag, Film, Clock, Check, X, FileText,
@@ -220,6 +226,7 @@ export default function WeeklyIssuesReportingPage() {
     const mStr = selectedMonth;
 
     return tasks.filter(t => {
+      if (isTaskArchived(t)) return false;
       const dateStr = t.req_date || t.created_at || '';
       if (!dateStr.startsWith(`${yStr}-${mStr}`)) return false;
       const day = parseInt(dateStr.substring(8, 10), 10);
@@ -232,11 +239,12 @@ export default function WeeklyIssuesReportingPage() {
       }
 
       // Check if task has obvious blockers
-      const isFailedOrCancelled = ['CANCEL', 'DESIGN_CANCEL', 'POSTPONE', 'DESIGN_POSTPONE'].includes(t.status_design);
+      const isFailedOrCancelled = isTaskPostponedOrCancelled(t);
       const isOverRevisions = (t.design_revision_count || 0) >= 3 || (t.strat_revision_count || 0) >= 3;
       const isBadExcellence = t.operational_excellence === 'BAD';
+      const isOverdueActive = isTaskActive(t) && t.due_date && new Date(t.due_date).getTime() < Date.now();
 
-      return isFailedOrCancelled || isOverRevisions || isBadExcellence;
+      return isFailedOrCancelled || isOverRevisions || isBadExcellence || isOverdueActive;
     });
   };
 

@@ -10,19 +10,28 @@ import {
 import { DIFFICULTY_WEIGHTS } from './constants';
 import { calculateBusinessDays, evaluateOperationalExcellence } from './sla-engine';
 import { getMonthName } from './utils';
+import {
+  isTaskActive,
+  isTaskDone,
+  isTaskPostponedOrCancelled,
+  isTaskArchived,
+  getWeekKeyFromDate
+} from './task-status';
 
 // --- TYPES FOR OPERATIONAL ANALYTICS ---
 
 export interface GlobalAnalyticsFilter {
   month: string; // 'all' or '01'-'12'
   year: string;  // 'all' or '2025', '2026', etc.
+  week?: string; // 'all' or 'W1' | 'W2' | 'W3' | 'W4'
   clientId: string; // 'all' or number string
   picId: string; // 'all' or user uuid
   taskSource: string; // 'all' or 'ORCA' | 'ECOMMERCE'
   contentTypeId: string; // 'all' or number string
   difficulty: string; // 'all' or 'LOW' | 'MEDIUM' | 'HIGH'
   operationalExcellence: string; // 'all' or 'EXCELLENCE' | 'GOOD' | 'BAD'
-  status: string; // 'all' or DesignStatus
+  status: string; // 'all' or DesignStatus or 'ACTIVE'
+  excludeArchived?: boolean;
 }
 
 export interface OccupancyItem {
@@ -133,20 +142,34 @@ export function filterTasksByGlobalFilter(
   filter: GlobalAnalyticsFilter
 ): TaskWithRelations[] {
   return tasks.filter(t => {
-    const dStr = t.req_date || t.created_at || '';
-    if (!dStr) return true;
-    const yearStr = dStr.substring(0, 4);
-    const monthStr = dStr.substring(5, 7);
+    // Exclude archived tasks unless explicitly included
+    if (filter.excludeArchived !== false && isTaskArchived(t)) return false;
 
-    if (filter.year !== 'all' && yearStr !== filter.year) return false;
-    if (filter.month !== 'all' && monthStr !== filter.month) return false;
+    const dStr = t.req_date || t.created_at || '';
+    if (dStr) {
+      const yearStr = dStr.substring(0, 4);
+      const monthStr = dStr.substring(5, 7);
+
+      if (filter.year !== 'all' && yearStr !== filter.year) return false;
+      if (filter.month !== 'all' && monthStr !== filter.month) return false;
+      if (filter.week && filter.week !== 'all') {
+        const wk = getWeekKeyFromDate(dStr);
+        if (wk !== filter.week) return false;
+      }
+    }
+
     if (filter.clientId !== 'all' && String(t.client_id) !== filter.clientId) return false;
     if (filter.picId !== 'all' && t.design_pic_id !== filter.picId && t.strat_pic_id !== filter.picId) return false;
     if (filter.taskSource !== 'all' && t.task_source !== filter.taskSource) return false;
     if (filter.contentTypeId !== 'all' && String(t.content_type_id) !== filter.contentTypeId) return false;
     if (filter.difficulty !== 'all' && (t.design_difficulty || 'MEDIUM') !== filter.difficulty) return false;
     if (filter.operationalExcellence !== 'all' && t.operational_excellence !== filter.operationalExcellence) return false;
-    if (filter.status !== 'all' && t.status_design !== filter.status) return false;
+    
+    if (filter.status === 'ACTIVE') {
+      if (!isTaskActive(t)) return false;
+    } else if (filter.status !== 'all' && t.status_design !== filter.status) {
+      return false;
+    }
 
     return true;
   });
@@ -163,7 +186,10 @@ export function calculateTeamOccupancy(
   const eligibleDesigners = users.filter(u => ['DESIGNER', 'TEAM_LEAD'].includes(u.role_name));
 
   return eligibleDesigners.map(user => {
-    const userTasks = tasks.filter(t => t.design_pic_id === user.id);
+    // Only non-cancelled, non-postponed tasks contribute to workload/occupancy
+    const userTasks = tasks.filter(
+      t => t.design_pic_id === user.id && !isTaskArchived(t) && !isTaskPostponedOrCancelled(t)
+    );
 
     let highCount = 0;
     let mediumCount = 0;
@@ -231,11 +257,14 @@ export function calculateRequestVsOutput(
 
   sources.forEach(source => {
     contentTypes.forEach(ct => {
-      const matchingTasks = tasks.filter(t => t.content_type_id === ct.id && t.task_source === source);
+      // Exclude archived, cancelled, or postponed tasks
+      const matchingTasks = tasks.filter(
+        t => t.content_type_id === ct.id && t.task_source === source && !isTaskArchived(t) && !isTaskPostponedOrCancelled(t)
+      );
       if (matchingTasks.length === 0) return;
 
       const reqQty = matchingTasks.reduce((sum, t) => sum + (t.req_qty || 1), 0);
-      const outputQty = matchingTasks.reduce((sum, t) => sum + (t.output_qty || (['DESIGN_APPROVED', 'TASK_CLOSED', 'DESIGN_SUBMITTED'].includes(t.status_design) ? t.req_qty : 0)), 0);
+      const outputQty = matchingTasks.reduce((sum, t) => sum + (t.output_qty || (isTaskDone(t) || t.status_design === 'DESIGN_SUBMITTED' ? (t.output_qty || t.req_qty || 1) : 0)), 0);
       const achievementRate = reqQty > 0 ? (outputQty / reqQty) * 100 : 0;
       const requestGap = reqQty - outputQty;
 
@@ -253,16 +282,17 @@ export function calculateRequestVsOutput(
     });
   });
 
-  const ecommTasks = tasks.filter(t => t.task_source === 'ECOMMERCE');
+  const validTasks = tasks.filter(t => !isTaskArchived(t) && !isTaskPostponedOrCancelled(t));
+  const ecommTasks = validTasks.filter(t => t.task_source === 'ECOMMERCE');
   const ecommReq = ecommTasks.reduce((sum, t) => sum + (t.req_qty || 1), 0);
-  const ecommOut = ecommTasks.reduce((sum, t) => sum + (t.output_qty || (['DESIGN_APPROVED', 'TASK_CLOSED', 'DESIGN_SUBMITTED'].includes(t.status_design) ? t.req_qty : 0)), 0);
+  const ecommOut = ecommTasks.reduce((sum, t) => sum + (t.output_qty || (isTaskDone(t) || t.status_design === 'DESIGN_SUBMITTED' ? (t.output_qty || t.req_qty || 1) : 0)), 0);
 
-  const orcaTasks = tasks.filter(t => t.task_source === 'ORCA');
+  const orcaTasks = validTasks.filter(t => t.task_source === 'ORCA');
   const orcaReq = orcaTasks.reduce((sum, t) => sum + (t.req_qty || 1), 0);
-  const orcaOut = orcaTasks.reduce((sum, t) => sum + (t.output_qty || (['DESIGN_APPROVED', 'TASK_CLOSED', 'DESIGN_SUBMITTED'].includes(t.status_design) ? t.req_qty : 0)), 0);
+  const orcaOut = orcaTasks.reduce((sum, t) => sum + (t.output_qty || (isTaskDone(t) || t.status_design === 'DESIGN_SUBMITTED' ? (t.output_qty || t.req_qty || 1) : 0)), 0);
 
-  const grandReq = tasks.reduce((sum, t) => sum + (t.req_qty || 1), 0);
-  const grandOut = tasks.reduce((sum, t) => sum + (t.output_qty || (['DESIGN_APPROVED', 'TASK_CLOSED', 'DESIGN_SUBMITTED'].includes(t.status_design) ? t.req_qty : 0)), 0);
+  const grandReq = validTasks.reduce((sum, t) => sum + (t.req_qty || 1), 0);
+  const grandOut = validTasks.reduce((sum, t) => sum + (t.output_qty || (isTaskDone(t) || t.status_design === 'DESIGN_SUBMITTED' ? (t.output_qty || t.req_qty || 1) : 0)), 0);
 
   return {
     items,

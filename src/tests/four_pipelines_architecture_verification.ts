@@ -160,15 +160,15 @@ assert(
   'Test 3b: Banner redesign routes directly to GD_NON_MOCKUP'
 );
 
-// Test 4: Approved E-commerce tasks can enter Motion only through explicit forwarding
+// Test 4: GD E-commerce tasks CANNOT enter Motion under revised business rules (Option B)
 const approvedNonMockupTask: CreativeTask = {
   ...pdpEcommerceTask,
   status_design: 'DESIGN_APPROVED',
   motion_readiness: 'READY_TO_ANIMATE' // Even if flag is artificially set!
 };
 assert(
-  canTransitionToMotion(approvedNonMockupTask) === true,
-  'Test 4: Approved GD E-commerce task with ready status qualifies for Motion'
+  canTransitionToMotion(approvedNonMockupTask) === false,
+  'Test 4: Approved GD E-commerce task is strictly prevented from entering Motion'
 );
 
 const nonMockupTransitionCheck = validatePipelineTransition(pdpEcommerceTask, 'MOTION', 'ADMIN');
@@ -177,12 +177,12 @@ assert(
   'Test 5: validatePipelineTransition rejects an unapproved E-commerce task'
 );
 assert(
-  validatePipelineTransition(approvedNonMockupTask, 'MOTION', 'ADMIN').allowed,
-  'Test 5b: validatePipelineTransition allows an approved E-commerce task to be forwarded'
+  validatePipelineTransition(approvedNonMockupTask, 'MOTION', 'ADMIN').allowed === false,
+  'Test 5b: validatePipelineTransition strictly rejects forwarding an approved GD E-Commerce task to Motion'
 );
 assert(
-  validatePipelineTransition(approvedNonMockupTask, 'MOTION', 'DESIGNER').allowed,
-  'Test 5c: Assigned design role is authorized to forward an approved task'
+  validatePipelineTransition(approvedNonMockupTask, 'MOTION', 'DESIGNER').allowed === false,
+  'Test 5c: Designer role cannot forward approved GD E-Commerce task to Motion'
 );
 
 // -------------------------------------------------------------------

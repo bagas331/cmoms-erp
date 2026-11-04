@@ -285,10 +285,16 @@ try {
 assert(unapprovedEcommerceBlocked, '9c-1. Unapproved E-commerce task cannot be forwarded to Motion');
 
 updateTaskStatus(nonMockupTask.id, 'DESIGN_APPROVED', leadUser.id);
-setMotionReadyness(nonMockupTask.id, true, leadUser.id);
+let ecommerceMotionBlocked = false;
+try {
+  setMotionReadyness(nonMockupTask.id, true, leadUser.id);
+} catch (e) {
+  ecommerceMotionBlocked = true;
+}
+assert(ecommerceMotionBlocked, '9c-2. Approved GD E-commerce task is strictly prevented from forwarding to Motion');
 assert(
-  getMotionTasks().some(motionTask => motionTask.task_id === nonMockupTask.id && motionTask.status_motion === 'QUEUED'),
-  '9c-2. Approved E-commerce task enters Motion after manual forwarding'
+  !getMotionTasks().some(motionTask => motionTask.task_id === nonMockupTask.id),
+  '9c-2b. No Motion record is created for an approved GD E-commerce task'
 );
 
 // Verify Mockup cannot create a motion subtask prematurely before DESIGN_APPROVED

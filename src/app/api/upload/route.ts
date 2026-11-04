@@ -6,6 +6,7 @@ import { resolveAuthenticatedUser } from '@/lib/server-auth';
 import { verifyImageBufferServerSide, MAX_SECTION_IMAGES } from '@/lib/image-upload-utils';
 import { TaskAttachment, AttachmentSection } from '@/lib/types';
 import { supabase, supabaseAdmin, isSupabaseConfigured } from '@/lib/supabase';
+import { getTasks, getMotionTasks, getTaskAttachments } from '@/lib/store';
 
 // Ensure public upload directory exists (used in local development)
 const UPLOAD_SUBDIR = path.join('uploads', 'tasks');
@@ -196,11 +197,19 @@ export async function DELETE(req: Request) {
 
     const urlObj = new URL(req.url);
     let targetUrl = urlObj.searchParams.get('url');
+    let attachmentId = urlObj.searchParams.get('attachmentId');
+    let uploadedBy = urlObj.searchParams.get('uploadedBy');
 
     if (!targetUrl) {
       const body = await req.json().catch(() => null);
       if (body?.url) {
         targetUrl = body.url;
+      }
+      if (body?.attachmentId) {
+        attachmentId = body.attachmentId;
+      }
+      if (body?.uploadedBy) {
+        uploadedBy = body.uploadedBy;
       }
     }
 
@@ -209,6 +218,45 @@ export async function DELETE(req: Request) {
         { success: false, message: 'URL foto yang akan dihapus wajib disertakan' },
         { status: 400 }
       );
+    }
+
+    // Security check: Authorization & IDOR Protection
+    const isAdminOrLead = ['ADMIN', 'TEAM_LEAD'].includes(user.role_name);
+    if (!isAdminOrLead) {
+      // Find if attachment belongs to an existing task in store
+      const allTasks = getTasks();
+      const allMotion = getMotionTasks();
+      
+      let foundAttachment: TaskAttachment | null = null;
+      let associatedTask: any = null;
+
+      for (const t of [...allTasks, ...allMotion]) {
+        const atts: TaskAttachment[] = (t as any).attachments || getTaskAttachments(t.id);
+        const match = atts.find(a => (attachmentId && a.id === attachmentId) || a.url === targetUrl);
+        if (match) {
+          foundAttachment = match;
+          associatedTask = t;
+          break;
+        }
+      }
+
+      if (foundAttachment) {
+        const isOwner = foundAttachment.uploaded_by === user.id;
+        const isTaskCreator = associatedTask?.created_by === user.id;
+        const isTaskPic = associatedTask?.design_pic_id === user.id || associatedTask?.strat_pic_id === user.id || associatedTask?.motion_pic_id === user.id;
+        if (!isOwner && !isTaskCreator && !isTaskPic) {
+          return NextResponse.json(
+            { success: false, message: 'Akses ditolak: Anda tidak memiliki wewenang untuk menghapus foto ini' },
+            { status: 403 }
+          );
+        }
+      } else if (uploadedBy && uploadedBy !== user.id) {
+        // If not attached to a persisted task yet, check declared uploader
+        return NextResponse.json(
+          { success: false, message: 'Akses ditolak: Anda tidak memiliki wewenang untuk menghapus foto ini' },
+          { status: 403 }
+        );
+      }
     }
 
     // Security check: Path traversal prevention

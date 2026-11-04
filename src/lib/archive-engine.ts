@@ -185,15 +185,20 @@ export function isCompletedInPreviousMonth(
 
 /**
  * Checks if a task is in a final completed state.
- * - CreativeTask: TASK_CLOSED
- * - MotionTask: COMPLETED
+ * - CreativeTask: TASK_CLOSED, DESIGN_APPROVED, or STRATEGIC APPROVED
+ * - MotionTask: COMPLETED or APPROVED
  */
 export function isTaskInFinalState(task: CreativeTask | MotionTask): boolean {
   if ('status_design' in task) {
-    return task.status_design === 'TASK_CLOSED';
+    const isStratTask = task.pipeline_type === 'STRATEGIC' || Boolean(task.requires_strategic_concept);
+    return (
+      task.status_design === 'TASK_CLOSED' ||
+      task.status_design === 'DESIGN_APPROVED' ||
+      (isStratTask && task.status_strat === 'APPROVED')
+    );
   }
   if ('status_motion' in task) {
-    return task.status_motion === 'COMPLETED';
+    return task.status_motion === 'COMPLETED' || task.status_motion === 'APPROVED';
   }
   return false;
 }
@@ -263,6 +268,7 @@ export function canUserRestoreTask(
     let parentTask = (task as any).parentTask as CreativeTask | undefined;
     if (!parentTask && task.task_id) {
       try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
         const { getTasks } = require('./store');
         parentTask = getTasks().find((t: any) => t.id === task.task_id);
       } catch {

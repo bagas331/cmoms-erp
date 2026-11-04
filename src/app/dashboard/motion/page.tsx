@@ -165,17 +165,26 @@ function MotionPageContent() {
       setAllUsers(users);
       setAllClients(clients);
       setAllTasks(tasks);
-      const enriched: EnrichedMotionTask[] = mts.map(mt => {
-        const parent = tasks.find(t => t.id === mt.task_id);
-        const resolvedAttachments = (mt.attachments && mt.attachments.length > 0)
-          ? mt.attachments
-          : (parent?.attachments || []);
-        return {
-          ...mt,
-          attachments: resolvedAttachments,
-          parentTask: parent,
-        };
-      });
+      const enriched: EnrichedMotionTask[] = mts
+        .filter(mt => {
+          const parent = tasks.find(t => t.id === mt.task_id);
+          // Opsi B: Exclude GD E-Commerce tasks from Motion Pipeline
+          if (parent?.pipeline_type === 'GD_NON_MOCKUP' || parent?.task_source === 'ECOMMERCE') {
+            return false;
+          }
+          return true;
+        })
+        .map(mt => {
+          const parent = tasks.find(t => t.id === mt.task_id);
+          const resolvedAttachments = (mt.attachments && mt.attachments.length > 0)
+            ? mt.attachments
+            : (parent?.attachments || []);
+          return {
+            ...mt,
+            attachments: resolvedAttachments,
+            parentTask: parent,
+          };
+        });
       setMotionTasks(enriched);
     } catch (err) {
       console.error('Failed to load motion data:', err);
@@ -688,9 +697,6 @@ function MotionPageContent() {
     return user.role_name !== 'MOTION_PIC';
   }, [user]);
 
-
-  if (!user) return null;
-
   const canMoveMotionTask = (mt: EnrichedMotionTask) => {
     if (!user || isReadOnly) return false;
     if (['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name)) return true;
@@ -1045,6 +1051,8 @@ function MotionPageContent() {
     setQuickFilter('all');
     updateUrlParams({ q: '', brand: 'all', status: 'all' });
   };
+
+  if (!user) return null;
 
   return (
     <div className="space-y-5">

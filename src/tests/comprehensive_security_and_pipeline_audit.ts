@@ -178,12 +178,12 @@ async function runAudit() {
   }, requesterUser.id);
   assert(determineTaskPipeline(ecommerceMockup) === 'GD_MOCKUP', '2.2b ECOMMERCE source with mockup content routes to GD_MOCKUP');
 
-  // 2.3 E-commerce can enter Motion only after approval and explicit forwarding
+  // 2.3 E-commerce terminates at Approve & Archive and CANNOT enter Motion
   const approvedNonMockup = { ...orcaNonMockup, status_design: 'DESIGN_APPROVED' as const, motion_readiness: 'READY_TO_ANIMATE' as const };
-  assert(canTransitionToMotion(approvedNonMockup) === true, '2.3a Approved E-commerce task can transition after it is marked ready');
+  assert(canTransitionToMotion(approvedNonMockup) === false, '2.3a GD E-commerce task CANNOT transition to Motion under revised business rules');
   const transValidation = validatePipelineTransition(orcaNonMockup, 'MOTION', 'ADMIN');
   assert(transValidation.allowed === false, '2.3b validatePipelineTransition rejects an unapproved E-commerce task');
-  assert(validatePipelineTransition(approvedNonMockup, 'MOTION', 'ADMIN').allowed, '2.3c approved E-commerce task may be forwarded');
+  assert(validatePipelineTransition(approvedNonMockup, 'MOTION', 'ADMIN').allowed === false, '2.3c Approved GD E-commerce task is strictly prevented from forwarding to Motion');
 
   // 2.4 GD Mockup Motion handover prerequisites
   const rawMockup = { ...ecommerceMockup };

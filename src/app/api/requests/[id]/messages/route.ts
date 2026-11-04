@@ -4,7 +4,7 @@ import {
   addComment, 
   editComment, 
   deleteComment, 
-  getAllTasksWithRelations 
+  getTaskById 
 } from '@/lib/supabase-store';
 import { checkRateLimit } from '@/lib/rate-limiter';
 import { canUserAccessTaskChat, canUserEditComment, canUserDeleteComment } from '@/lib/chat-auth';
@@ -35,8 +35,7 @@ export async function GET(req: Request, context: RouteContext) {
     const limitParam = parseInt(url.searchParams.get('limit') || '50', 10);
     const limit = Math.min(Math.max(1, limitParam), 100);
 
-    const tasks = await getAllTasksWithRelations();
-    const task = tasks.find(t => t.id === taskId || t.task_code === taskId);
+    const task = await getTaskById(taskId);
 
     if (!task) {
       return NextResponse.json(
@@ -118,8 +117,7 @@ export async function POST(req: Request, context: RouteContext) {
     }
 
     // 2. Find Task
-    const tasks = await getAllTasksWithRelations();
-    const task = tasks.find(t => t.id === taskId || t.task_code === taskId);
+    const task = await getTaskById(taskId);
     if (!task) {
       return NextResponse.json(
         { success: false, message: 'Request tidak ditemukan' },

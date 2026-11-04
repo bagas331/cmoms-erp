@@ -128,21 +128,16 @@ assert.strictEqual(getTasks().find(task => task.id === mockupTask.id)?.motion_re
 const ecommerceTask = createAndApprove('GD_NON_MOCKUP', 2, 'ECOMMERCE', false, false);
 const approvedEcommerce = getTaskWithRelations(ecommerceTask.id);
 assert.ok(approvedEcommerce);
-assert.strictEqual(filterTasksByPipeline([approvedEcommerce], 'GD_NON_MOCKUP').length, 1);
+assert.strictEqual(filterTasksByPipeline([approvedEcommerce], 'GD_NON_MOCKUP').length, 0);
 assert.strictEqual(getMotionTasks().some(motion => motion.task_id === ecommerceTask.id), false);
 
-forwardTaskToMotion(ecommerceTask.id, designer!.id);
-motionTask = getMotionTasks().find(motion => motion.task_id === ecommerceTask.id);
-assert.ok(motionTask, 'E-Commerce request must appear in Motion after manual forward');
-assert.strictEqual(motionTask.status_motion, 'QUEUED');
-assert.strictEqual(motionTask.attachments?.length, attachments.length);
-assert.strictEqual(extractAttachmentsFromNotes(motionTask.notes).cleanNotes, briefNotes);
-assert.strictEqual(getMotionTasks().filter(motion => motion.task_id === ecommerceTask.id).length, 1);
+assert.throws(() => {
+  forwardTaskToMotion(ecommerceTask.id, designer!.id);
+}, /Hanya request Approved dari pipeline GD Mockup yang dapat diteruskan ke Motion/, 'Forwarding GD E-Commerce to Motion must throw error');
 
-const forwardedEcommerce = getTaskWithRelations(ecommerceTask.id);
-assert.ok(forwardedEcommerce);
-assert.strictEqual(filterTasksByPipeline([forwardedEcommerce], 'GD_NON_MOCKUP').length, 0);
-assert.strictEqual(filterTasksByPipeline([forwardedEcommerce], 'MOTION').length, 1);
+assert.strictEqual(getMotionTasks().some(motion => motion.task_id === ecommerceTask.id), false);
+assert.strictEqual(filterTasksByPipeline([approvedEcommerce], 'MOTION').length, 0);
 
-console.log('PASS: Mockup and E-Commerce approvals remain in Approve until manually forwarded.');
+console.log('PASS: Mockup approvals remain in Approve until manually forwarded.');
+console.log('PASS: GD E-Commerce tasks move directly to Archive upon approval and cannot be forwarded to Motion.');
 console.log('PASS: Notes Brief, ordered images, attachment sections, Motion queue status, and deduplication persist.');

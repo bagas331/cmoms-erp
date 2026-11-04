@@ -130,7 +130,7 @@ export function RequestKanbanCard({
     )
   );
 
-  const showMotionAction = !isReadOnly && !isArchive && isDesignPipeline && task.status_design === 'DESIGN_APPROVED';
+  const showMotionAction = !isReadOnly && !isArchive && currentPipeline === 'GD_MOCKUP' && task.pipeline_type !== 'GD_NON_MOCKUP' && task.task_source !== 'ECOMMERCE' && task.status_design === 'DESIGN_APPROVED';
 
   // Strategic actions: show in Strategic Pipeline while concept is active (PENDING, IN_PROGRESS, REVIEW, REVISION)
   const showStratActions = !isArchive && isStrategicTask && canUserActOnStrat && task.status_strat !== 'APPROVED';

@@ -15,6 +15,17 @@ import {
   Search, Layers, Compass, ShoppingBag, Eye, ExternalLink, ArrowRight,
   ShieldCheck, Zap, Info, Clock, RefreshCw, AlertCircle
 } from 'lucide-react';
+import {
+  isTaskActive,
+  isTaskDone,
+  isTaskPostponedOrCancelled,
+  isTaskArchived,
+  isMotionActive,
+  isMotionDone,
+  isMotionPostponedOrCancelled,
+  isMotionArchived,
+  getWeekKeyFromDate
+} from '@/lib/task-status';
 
 export type ReportPipelineTab = 'ALL' | 'GD_MOCKUP' | 'STRATEGIC' | 'GD_NON_MOCKUP' | 'MOTION';
 
@@ -27,6 +38,7 @@ export default function ReportsPage() {
 
   const [filterMonth, setFilterMonth] = usePersistedState<string>('cmos_reports_filter_month', 'all');
   const [filterYear, setFilterYear] = usePersistedState<string>('cmos_reports_filter_year', 'all');
+  const [filterWeek, setFilterWeek] = usePersistedState<string>('cmos_reports_filter_week', 'all');
   const [activeTab, setActiveTab] = usePersistedState<ReportPipelineTab>('cmos_reports_pipeline_tab', 'ALL');
 
   // Excellence, Good, Bad Inspector Filters
@@ -121,30 +133,34 @@ export default function ReportsPage() {
     return Number(t.output_qty) || Number(t.req_qty) || 1;
   };
 
-  // Filter tasks based on global Month and Year filter
+  // Filter tasks based on global Month, Year, and Week filter
   const dateFilteredTasks = useMemo(() => {
     return tasks.filter(t => {
+      if (isTaskArchived(t)) return false;
       const dStr = t.req_date || t.created_at || '';
       if (!dStr) return true;
       const yearStr = dStr.substring(0, 4);
       const monthStr = dStr.substring(5, 7);
       if (filterYear !== 'all' && yearStr !== filterYear) return false;
       if (filterMonth !== 'all' && monthStr !== filterMonth) return false;
+      if (filterWeek !== 'all' && getWeekKeyFromDate(dStr) !== filterWeek) return false;
       return true;
     });
-  }, [tasks, filterYear, filterMonth]);
+  }, [tasks, filterYear, filterMonth, filterWeek]);
 
   const dateFilteredMotionTasks = useMemo(() => {
     return motionTasks.filter(mt => {
+      if (isMotionArchived(mt)) return false;
       const dStr = mt.created_at || '';
       if (!dStr) return true;
       const yearStr = dStr.substring(0, 4);
       const monthStr = dStr.substring(5, 7);
       if (filterYear !== 'all' && yearStr !== filterYear) return false;
       if (filterMonth !== 'all' && monthStr !== filterMonth) return false;
+      if (filterWeek !== 'all' && getWeekKeyFromDate(dStr) !== filterWeek) return false;
       return true;
     });
-  }, [motionTasks, filterYear, filterMonth]);
+  }, [motionTasks, filterYear, filterMonth, filterWeek]);
 
   // Filter tasks based on active pipeline tab
   const pipelineFilteredTasks = useMemo(() => {
@@ -338,10 +354,16 @@ export default function ReportsPage() {
   }, [completedTasks]);
 
   const getPeriodLabel = () => {
-    if (filterMonth === 'all' && filterYear === 'all') return 'All Time';
-    if (filterMonth === 'all') return `Year ${filterYear}`;
-    if (filterYear === 'all') return `${getMonthName(Number(filterMonth))} (All Years)`;
-    return `${getMonthName(Number(filterMonth))} ${filterYear}`;
+    let base = '';
+    if (filterMonth === 'all' && filterYear === 'all') base = 'All Time';
+    else if (filterMonth === 'all') base = `Year ${filterYear}`;
+    else if (filterYear === 'all') base = `${getMonthName(Number(filterMonth))} (All Years)`;
+    else base = `${getMonthName(Number(filterMonth))} ${filterYear}`;
+
+    if (filterWeek !== 'all') {
+      base += ` • ${filterWeek}`;
+    }
+    return base;
   };
 
   const exportWorkloadCSV = () => {
@@ -442,6 +464,20 @@ export default function ReportsPage() {
               {availableYears.map(y => (
                 <option key={y} value={y}>{y}</option>
               ))}
+            </select>
+
+            <div className="w-px h-3.5 bg-[var(--border-primary)]"></div>
+
+            <select 
+              className="select border-none bg-transparent py-1 text-xs focus:ring-0 min-w-[100px] cursor-pointer" 
+              value={filterWeek} 
+              onChange={(e) => setFilterWeek(e.target.value)}
+            >
+              <option value="all">Semua Minggu</option>
+              <option value="W1">Week 1 (1 - 7)</option>
+              <option value="W2">Week 2 (8 - 14)</option>
+              <option value="W3">Week 3 (15 - 21)</option>
+              <option value="W4">Week 4 (22 - Akhir)</option>
             </select>
           </div>
         </div>
@@ -810,14 +846,18 @@ export default function ReportsPage() {
             </div>
 
             {/* Search Input */}
-            <div className="relative min-w-[220px]">
-              <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-[var(--text-muted)] pointer-events-none" />
+            <div className="relative min-w-[220px] flex items-center">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
               <input
                 type="text"
                 value={inspectorSearch}
                 onChange={(e) => setInspectorSearch(e.target.value)}
                 placeholder="Cari task code, brand, PIC..."
-                className="w-full pl-9 pr-3 py-1.5 text-xs rounded-lg bg-[var(--bg-card)] border border-[var(--border-primary)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-blue)]"
+                style={{
+                  paddingLeft: '34px',
+                  paddingRight: '12px',
+                }}
+                className="w-full py-1.5 text-xs rounded-lg bg-[var(--bg-card)] border border-[var(--border-primary)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent-blue)]"
               />
             </div>
           </div>

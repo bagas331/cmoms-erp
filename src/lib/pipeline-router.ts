@@ -84,6 +84,7 @@ export function determineTaskPipeline(task: {
 
 /**
  * Checks whether an approved design-pipeline task may be forwarded to Motion.
+ * Only GD Mockup tasks are eligible for motion animation. GD E-Commerce tasks finish at Approve.
  */
 export function canForwardToMotion(task: {
   status_design?: DesignStatus;
@@ -93,10 +94,12 @@ export function canForwardToMotion(task: {
   content_type_id?: number;
   content_type_name?: string;
   campaign_name?: string;
+  task_source?: string;
 }): boolean {
   if (task.status_design !== 'DESIGN_APPROVED') return false;
+  if (task.task_source === 'ECOMMERCE' || task.pipeline_type === 'GD_NON_MOCKUP') return false;
   const pipeline = determineTaskPipeline(task);
-  return pipeline === 'GD_MOCKUP' || pipeline === 'GD_NON_MOCKUP';
+  return pipeline === 'GD_MOCKUP';
 }
 
 /**
@@ -198,7 +201,7 @@ export function validatePipelineTransition(
 
     case 'MOTION':
       if (!canForwardToMotion(task)) {
-        return { allowed: false, reason: 'Task harus berasal dari pipeline desain dan berstatus Approved sebelum diteruskan ke Motion.' };
+        return { allowed: false, reason: 'Hanya request Approved dari pipeline GD Mockup yang dapat diteruskan ke Motion. Request GD E-Commerce selesai di tahap Approve.' };
       }
       return { allowed: true };
 
@@ -278,9 +281,8 @@ export function filterTasksByPipeline(
         if (isMockupTask(t)) return false;
         // E-Commerce pipeline ONLY allows E-Commerce task source
         if (t.task_source && t.task_source !== 'ECOMMERCE') return false;
-        // Approved tasks stay visible for manual forward to Motion.
-        // Once forwarded to Motion (has motion_task or marked ready) AND design is approved, hide from active board.
-        if (!options?.includeArchived && t.status_design === 'DESIGN_APPROVED' && (Boolean(t.motion_task) || t.motion_readiness === 'READY_TO_ANIMATE')) {
+        // GD E-Commerce (Opsi B): Once approved or closed, task immediately moves to Archived Tasks (active Approved column remains empty) unless explicitly restored
+        if (!options?.includeArchived && (t.status_design === 'DESIGN_APPROVED' || t.status_design === 'TASK_CLOSED') && !t.restored_at) {
           return false;
         }
         return true;
@@ -288,6 +290,10 @@ export function filterTasksByPipeline(
       case 'MOTION':
         // Belongs to Motion if it has a motion subtask
         if (!options?.includeArchived && t.motion_task?.is_archived) {
+          return false;
+        }
+        // Exclude GD E-Commerce tasks from Motion Pipeline (Opsi B)
+        if (t.pipeline_type === 'GD_NON_MOCKUP' || t.task_source === 'ECOMMERCE') {
           return false;
         }
         return Boolean(t.motion_task);

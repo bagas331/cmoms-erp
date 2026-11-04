@@ -148,7 +148,11 @@ export function RequestImageUpload({
         void fetch('/api/upload', {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: attachment.url })
+          body: JSON.stringify({ 
+            url: attachment.url,
+            attachmentId: attachment.id,
+            uploadedBy: attachment.uploaded_by
+          })
         }).catch(() => {
           // Non-critical background cleanup
         });

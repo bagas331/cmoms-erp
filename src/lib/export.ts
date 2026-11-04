@@ -55,3 +55,24 @@ export function downloadCSV(data: Record<string, unknown>[], filename: string) {
   }, 10000);
 }
 
+export function downloadRawCSV(filename: string, csvString: string) {
+  if (typeof window === 'undefined') return;
+  const blob = new Blob(['\uFEFF' + csvString], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  link.setAttribute('href', url);
+  link.setAttribute('download', filename);
+  link.style.position = 'fixed';
+  link.style.left = '-9999px';
+  link.style.top = '-9999px';
+  link.style.opacity = '0';
+  document.body.appendChild(link);
+  link.click();
+  setTimeout(() => {
+    if (link.parentNode) {
+      link.parentNode.removeChild(link);
+    }
+    URL.revokeObjectURL(url);
+  }, 10000);
+}
+

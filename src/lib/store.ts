@@ -33,6 +33,18 @@ import {
   buildTaskSyncPayload,
   buildMotionTaskSyncPayload
 } from './google-sheets-outbox';
+import {
+  isTaskActive,
+  isTaskDone,
+  isTaskPostponedOrCancelled,
+  isTaskArchived,
+  isMotionActive,
+  isMotionDone,
+  isMotionPostponedOrCancelled,
+  isMotionArchived,
+  getWeekKeyFromDate,
+  matchesPeriod
+} from './task-status';
 
 export const STORE_KEYS = {
   roles: 'cmoms_roles',
@@ -267,7 +279,7 @@ export function getContentTypeById(id: number): ContentType | undefined {
 
 // --- ENRICHED GETTERS ---
 export function getTaskWithRelations(taskId: string): TaskWithRelations | undefined {
-  const task = getTasks().find(t => t.id === taskId);
+  const task = getTasks().find(t => t.id === taskId || t.task_code === taskId);
   if (!task) return undefined;
 
   const client = getClientById(task.client_id);
@@ -411,6 +423,7 @@ export function getTaskWithRelations(taskId: string): TaskWithRelations | undefi
     final_asset_link: resolvedFinalAssetLink,
     final_asset_name: resolvedFinalAssetName,
     approved_at: resolvedApprovedAt,
+    assigned_at: task.assigned_at || (task.design_pic_id ? (task.submission_date ? `${task.submission_date}T00:00:00Z` : task.created_at) : null),
     source_strategic_task_id: resolvedSourceStratId,
     spawned_design_task_id: resolvedSpawnedDesignTaskId,
     notes: displayNotes,
@@ -439,26 +452,36 @@ export function getAllTasksWithRelations(): TaskWithRelations[] {
   return getTasks().map(task => getTaskWithRelations(task.id)!).filter(Boolean);
 }
 
-export function getDesignerWorkloads(filterMonth?: string, filterYear?: string): DesignerWorkload[] {
+export function getTaskById(taskIdOrCode: string): TaskWithRelations | undefined {
+  return getTaskWithRelations(taskIdOrCode);
+}
+
+export function getDesignerWorkloads(filterMonth?: string, filterYear?: string, filterWeek?: string): DesignerWorkload[] {
   const users = getUsers().filter(u => u.role_name === 'DESIGNER' || u.role_name === 'TEAM_LEAD');
   let tasks = getTasks();
 
+  // Exclude archived tasks from workload calculation
+  tasks = tasks.filter(t => !isTaskArchived(t));
+
   if (filterYear && filterYear !== 'all') {
-    tasks = tasks.filter(t => new Date(t.req_date).getFullYear().toString() === filterYear);
+    tasks = tasks.filter(t => new Date(t.req_date || t.created_at).getFullYear().toString() === filterYear);
   }
   if (filterMonth && filterMonth !== 'all') {
-    tasks = tasks.filter(t => String(new Date(t.req_date).getMonth() + 1).padStart(2, '0') === filterMonth);
+    tasks = tasks.filter(t => String(new Date(t.req_date || t.created_at).getMonth() + 1).padStart(2, '0') === filterMonth);
+  }
+  if (filterWeek && filterWeek !== 'all') {
+    tasks = tasks.filter(t => getWeekKeyFromDate(t.req_date || t.created_at) === filterWeek);
   }
 
   return users.filter(u => u.daily_capacity_points > 0).map(user => {
+    // Strictly active tasks: not done, not cancelled, not postponed
     const activeTasks = tasks.filter(
-      t => t.design_pic_id === user.id &&
-        !['TASK_CLOSED'].includes(t.status_design)
+      t => t.design_pic_id === user.id && isTaskActive(t)
     );
 
     const accumulated = activeTasks.reduce((sum, t) => {
       const weight = t.design_difficulty ? DIFFICULTY_WEIGHTS[t.design_difficulty] : 0;
-      return sum + (t.output_qty * weight);
+      return sum + ((t.output_qty || t.req_qty || 1) * weight);
     }, 0);
 
     return {
@@ -475,7 +498,7 @@ export function getDesignerWorkloads(filterMonth?: string, filterYear?: string):
         task_code: t.task_code,
         campaign_name: t.campaign_name,
         difficulty: t.design_difficulty,
-        points: t.design_difficulty ? t.output_qty * DIFFICULTY_WEIGHTS[t.design_difficulty] : 0,
+        points: t.design_difficulty ? (t.output_qty || t.req_qty || 1) * DIFFICULTY_WEIGHTS[t.design_difficulty] : 0,
         status: t.status_design,
         due_date: t.due_date,
       })),
@@ -483,9 +506,39 @@ export function getDesignerWorkloads(filterMonth?: string, filterYear?: string):
   });
 }
 
-export function getDashboardStats(filterMonth?: string, filterYear?: string, filterDateFrom?: string, filterDateTo?: string): DashboardStats {
+export function getDashboardStats(
+  filterMonthOrOptions?: string | { filterMonth?: string; filterYear?: string; filterWeek?: string; filterDateFrom?: string; filterDateTo?: string },
+  filterYearArg?: string,
+  filterDateFromArg?: string,
+  filterDateToArg?: string,
+  filterWeekArg?: string
+): DashboardStats {
+  let filterMonth: string | undefined;
+  let filterYear: string | undefined;
+  let filterWeek: string | undefined;
+  let filterDateFrom: string | undefined;
+  let filterDateTo: string | undefined;
+
+  if (typeof filterMonthOrOptions === 'object' && filterMonthOrOptions !== null) {
+    filterMonth = filterMonthOrOptions.filterMonth;
+    filterYear = filterMonthOrOptions.filterYear;
+    filterWeek = filterMonthOrOptions.filterWeek;
+    filterDateFrom = filterMonthOrOptions.filterDateFrom;
+    filterDateTo = filterMonthOrOptions.filterDateTo;
+  } else {
+    filterMonth = filterMonthOrOptions;
+    filterYear = filterYearArg;
+    filterDateFrom = filterDateFromArg;
+    filterDateTo = filterDateToArg;
+    filterWeek = filterWeekArg;
+  }
+
   let tasks = getAllTasksWithRelations();
   let motionTasks = getMotionTasks();
+
+  // Exclude archived tasks from operational stats
+  tasks = tasks.filter(t => !isTaskArchived(t));
+  motionTasks = motionTasks.filter(m => !isMotionArchived(m));
 
   if (filterDateFrom && filterDateTo) {
     tasks = tasks.filter(t => {
@@ -498,27 +551,35 @@ export function getDashboardStats(filterMonth?: string, filterYear?: string, fil
     });
   } else {
     if (filterYear && filterYear !== 'all') {
-      tasks = tasks.filter(t => new Date(t.req_date).getFullYear().toString() === filterYear);
+      tasks = tasks.filter(t => new Date(t.req_date || t.created_at).getFullYear().toString() === filterYear);
       motionTasks = motionTasks.filter(m => new Date(m.created_at).getFullYear().toString() === filterYear);
     }
     if (filterMonth && filterMonth !== 'all') {
-      tasks = tasks.filter(t => String(new Date(t.req_date).getMonth() + 1).padStart(2, '0') === filterMonth);
+      tasks = tasks.filter(t => String(new Date(t.req_date || t.created_at).getMonth() + 1).padStart(2, '0') === filterMonth);
       motionTasks = motionTasks.filter(m => String(new Date(m.created_at).getMonth() + 1).padStart(2, '0') === filterMonth);
+    }
+    if (filterWeek && filterWeek !== 'all') {
+      tasks = tasks.filter(t => getWeekKeyFromDate(t.req_date || t.created_at) === filterWeek);
+      motionTasks = motionTasks.filter(m => getWeekKeyFromDate(m.created_at) === filterWeek);
     }
   }
 
   const thisPeriodTasks = tasks;
-  const activeTasks = tasks.filter(t => !['TASK_CLOSED'].includes(t.status_design));
+  // Strictly active tasks: not done, not postponed/cancelled
+  const activeTasks = tasks.filter(t => isTaskActive(t));
+  const completedTasks = tasks.filter(t => isTaskDone(t));
+  const activeMotionTasks = motionTasks.filter(m => isMotionActive(m));
+
   const submittedOrApproved = thisPeriodTasks.filter(t => t.operational_excellence);
   const excellenceCount = submittedOrApproved.filter(t => t.operational_excellence === 'EXCELLENCE').length;
 
   return {
     active_tasks: activeTasks.length,
-    unassigned_tasks: tasks.filter(t => t.status_design === 'DESIGN_UNASSIGNED' || t.status_design === 'STRAT_PENDING').length,
-    in_progress_tasks: tasks.filter(t => t.status_design === 'DESIGN_IN_PROGRESS' || t.status_design === 'DESIGN_ASSIGNED').length,
-    submitted_tasks: tasks.filter(t => t.status_design === 'DESIGN_SUBMITTED').length,
-    completed_tasks: tasks.filter(t => t.status_design === 'TASK_CLOSED' || t.status_design === 'DESIGN_APPROVED').length,
-    motion_queue: motionTasks.filter(mt => mt.status_motion === 'QUEUED' || mt.status_motion === 'IN_PROGRESS').length,
+    unassigned_tasks: tasks.filter(t => isTaskActive(t) && (t.status_design === 'DESIGN_UNASSIGNED' || t.status_design === 'STRAT_PENDING')).length,
+    in_progress_tasks: tasks.filter(t => isTaskActive(t) && (t.status_design === 'DESIGN_IN_PROGRESS' || t.status_design === 'DESIGN_ASSIGNED' || t.status_design === 'DESIGN_REVISION')).length,
+    submitted_tasks: tasks.filter(t => isTaskActive(t) && t.status_design === 'DESIGN_SUBMITTED').length,
+    completed_tasks: completedTasks.length,
+    motion_queue: activeMotionTasks.length,
     sla_compliance_rate: submittedOrApproved.length > 0
       ? (excellenceCount / submittedOrApproved.length) * 100
       : 100,
@@ -528,13 +589,13 @@ export function getDashboardStats(filterMonth?: string, filterYear?: string, fil
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       const diff = (due.getTime() - today.getTime()) / 86400000;
-      return diff <= 1 && diff >= 0 && !['DESIGN_SUBMITTED', 'DESIGN_APPROVED', 'TASK_CLOSED'].includes(t.status_design);
+      return diff <= 1 && diff >= 0;
     }),
     overdue_tasks: activeTasks.filter(t => {
       const due = new Date(t.due_date);
       const today = new Date();
       today.setHours(0, 0, 0, 0);
-      return due < today && !['DESIGN_SUBMITTED', 'DESIGN_APPROVED', 'TASK_CLOSED'].includes(t.status_design);
+      return due.getTime() < today.getTime();
     }),
   };
 }
@@ -906,7 +967,7 @@ export function addComment(
   const user = getUserById(userId);
   const task = getTaskWithRelations(taskId);
 
-  let cleanContent = content ? content.trim() : '';
+  const cleanContent = content ? content.trim() : '';
   let validatedAttachment: { url: string; type: 'image' | 'video' | 'file'; name?: string } | undefined = undefined;
 
   if (attachment) {
@@ -1456,6 +1517,7 @@ export function assignTask(taskId: string, input: AssignTaskInput, assignedBy: s
 
   if (input.design_pic_id) {
     task.design_pic_id = input.design_pic_id;
+    task.assigned_at = task.assigned_at || now();
     if (input.design_difficulty) task.design_difficulty = input.design_difficulty;
     if (!isStratPhase) {
       task.status_design = 'DESIGN_ASSIGNED';
@@ -1835,7 +1897,7 @@ export function handoverStrategicTaskToGD(
     };
 
     task.spawned_design_task_id = spawnedTask.id;
-    let parentCleanNotes = (task.notes || '')
+    const parentCleanNotes = (task.notes || '')
       .replace(/\[SPAWNED_DESIGN_TASK_ID:[^\]]+\]\n?/g, '')
       .replace(/\[SPAWNED_DESIGN_TASK_CODE:[^\]]+\]\n?/g, '')
       .trim();
@@ -2185,7 +2247,7 @@ export function forwardTaskToMotion(taskId: string, userId: string): void {
   const task = getTasks().find(candidate => candidate.id === taskId);
   if (!task) throw new Error('Request tidak ditemukan.');
   if (!canForwardToMotion(task)) {
-    throw new Error('Hanya request Approved dari pipeline GD Mockup atau GD E-Commerce yang dapat diteruskan ke Motion.');
+    throw new Error('Hanya request Approved dari pipeline GD Mockup yang dapat diteruskan ke Motion. Request GD E-Commerce selesai di tahap Approve.');
   }
 
   const actor = getUserById(userId);
@@ -2461,6 +2523,7 @@ export function assignMotionPic(motionTaskId: string, motionPicId: string, userI
   if (idx === -1) return;
 
   motionTasks[idx].motion_pic_id = motionPicId;
+  motionTasks[idx].assigned_at = motionTasks[idx].assigned_at || now();
   motionTasks[idx].status_motion = 'IN_PROGRESS';
   motionTasks[idx].updated_at = now();
   setStore(STORE_KEYS.motionTasks, motionTasks);

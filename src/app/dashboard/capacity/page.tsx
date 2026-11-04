@@ -58,6 +58,7 @@ export default function CapacityPage() {
   const defaultCapacityFilter: GlobalAnalyticsFilter = {
     month: 'all',
     year: 'all',
+    week: 'all',
     clientId: 'all',
     picId: 'all',
     taskSource: 'all',
@@ -169,6 +170,7 @@ export default function CapacityPage() {
     const reset = {
       month: 'all',
       year: 'all',
+      week: 'all',
       clientId: 'all',
       picId: 'all',
       taskSource: 'all',
@@ -188,10 +190,16 @@ export default function CapacityPage() {
 
   // Calculation Results
   const periodLabel = useMemo(() => {
-    if (appliedFilter.month === 'all' && appliedFilter.year === 'all') return 'All Time';
-    if (appliedFilter.month === 'all') return `Year ${appliedFilter.year}`;
-    if (appliedFilter.year === 'all') return `${getMonthName(Number(appliedFilter.month))} (All Years)`;
-    return `${getMonthName(Number(appliedFilter.month))} ${appliedFilter.year}`;
+    let label = '';
+    if (appliedFilter.month === 'all' && appliedFilter.year === 'all') label = 'All Time';
+    else if (appliedFilter.month === 'all') label = `Year ${appliedFilter.year}`;
+    else if (appliedFilter.year === 'all') label = `${getMonthName(Number(appliedFilter.month))} (All Years)`;
+    else label = `${getMonthName(Number(appliedFilter.month))} ${appliedFilter.year}`;
+
+    if (appliedFilter.week && appliedFilter.week !== 'all') {
+      label += ` • ${appliedFilter.week}`;
+    }
+    return label;
   }, [appliedFilter]);
 
   const occupancyResults = useMemo(() => {
@@ -364,7 +372,7 @@ export default function CapacityPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-9 gap-2 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-10 gap-2 text-xs">
           {/* Month */}
           <div>
             <label className="text-[10px] text-[var(--text-muted)] font-bold uppercase mb-0.5 block">Month</label>
@@ -390,6 +398,22 @@ export default function CapacityPage() {
             >
               <option value="all">All Years</option>
               {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+
+          {/* Week */}
+          <div>
+            <label className="text-[10px] text-[var(--text-muted)] font-bold uppercase mb-0.5 block">Week</label>
+            <select
+              className="select w-full h-8 text-xs py-1 px-2 rounded-lg"
+              value={filter.week || 'all'}
+              onChange={e => setFilter({ ...filter, week: e.target.value })}
+            >
+              <option value="all">Semua Minggu</option>
+              <option value="W1">Week 1 (1 - 7)</option>
+              <option value="W2">Week 2 (8 - 14)</option>
+              <option value="W3">Week 3 (15 - 21)</option>
+              <option value="W4">Week 4 (22 - Akhir)</option>
             </select>
           </div>
 

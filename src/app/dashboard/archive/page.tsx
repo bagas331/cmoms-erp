@@ -24,6 +24,7 @@ import {
   WeekPartitionKey
 } from '@/lib/types';
 import { canUserRestoreTask, getDueWeekPartition, computeArchivePeriod, getTaskCompletionDate } from '@/lib/archive-engine';
+import { isTaskDone, isMotionDone } from '@/lib/task-status';
 import { isMockupTask, determineTaskPipeline } from '@/lib/pipeline-router';
 import {
   PIPELINE_LABELS,
@@ -126,10 +127,6 @@ function ArchivePageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  useEffect(() => {
-    router.replace('/dashboard/motion?tab=archive');
-  }, [router]);
-
   const [tasks, setTasks] = useState<TaskWithRelations[]>([]);
   const [motionTasks, setMotionTasks] = useState<MotionTask[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -183,12 +180,12 @@ function ArchivePageContent() {
 
     // 1. Creative Tasks that are archived or closed/approved
     tasks.forEach(t => {
-      // If task belongs to motion or is linked to a motion task, let the motion loop handle it
-      if (t.pipeline_type === 'MOTION' || (t.task_code && t.task_code.startsWith('MOT-')) || motionTasks.some(m => m.task_id === t.id)) {
+      // Pure motion tasks are handled in the Motion Tasks loop below
+      if (t.pipeline_type === 'MOTION' || (t.task_code && t.task_code.startsWith('MOT-'))) {
         return;
       }
       const isStratTask = t.pipeline_type === 'STRATEGIC' || Boolean(t.requires_strategic_concept);
-      const isArchived = (t.is_archived === true || t.status_design === 'TASK_CLOSED' || t.status_design === 'DESIGN_APPROVED' || (isStratTask && t.status_strat === 'APPROVED')) && !t.restored_at;
+      const isArchived = (t.is_archived === true || isTaskDone(t) || t.status_design === 'TASK_CLOSED' || t.status_design === 'DESIGN_APPROVED' || (isStratTask && t.status_strat === 'APPROVED')) && !t.restored_at;
       if (!isArchived) return;
 
       const pipeline: PipelineType = determineTaskPipeline(t);
@@ -233,10 +230,13 @@ function ArchivePageContent() {
 
     // 2. Motion Tasks that are archived or completed/approved
     motionTasks.forEach(mt => {
-      const isArchived = (mt.is_archived === true || mt.status_motion === 'COMPLETED' || mt.status_motion === 'APPROVED') && !mt.restored_at;
-      if (!isArchived) return;
-
       const parent = tasks.find(t => t.id === mt.task_id);
+      // Opsi B: Exclude GD E-Commerce tasks from Motion pipeline
+      if (parent?.pipeline_type === 'GD_NON_MOCKUP' || parent?.task_source === 'ECOMMERCE') {
+        return;
+      }
+      const isArchived = (mt.is_archived === true || isMotionDone(mt) || mt.status_motion === 'COMPLETED' || mt.status_motion === 'APPROVED') && !mt.restored_at;
+      if (!isArchived) return;
       const client = clients.find(c => c.id === mt.client_id);
       const clientName = parent?.client_name || client?.name || 'Unknown Client';
       const picUser = allUsers.find(u => u.id === mt.motion_pic_id);

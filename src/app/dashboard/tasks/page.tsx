@@ -29,7 +29,7 @@ import {
 } from '@/lib/constants';
 import { formatDisplayDate, formatDisplayDateTime, cn, sanitizeUrl, getWeekOfMonth, getISOWeekNumber, getWeekRangeLabel, extractErrorMessage, canUserDeleteTask } from '@/lib/utils';
 import { TaskWithRelations, CreateTaskInput, AssignTaskInput, DesignStatus, TaskSource, ReasonCategory, Client, ContentType, User as UserType, StratStatus, TaskComment, PipelineType, WeekPartitionKey, WeekPartitionInfo, TaskAttachment, AttachmentSection } from '@/lib/types';
-import { filterTasksByPipeline, isMockupTask, canForwardToMotion, canUserManagePipeline, validateStageTransition } from '@/lib/pipeline-router';
+import { filterTasksByPipeline, isMockupTask, canForwardToMotion, canUserManagePipeline, validateStageTransition, determineTaskPipeline } from '@/lib/pipeline-router';
 import { getDueWeekPartition, getWeeklyPartitionsForMonth, isTaskOverdue, canUserRestoreTask } from '@/lib/archive-engine';
 import {
   Plus, Search, Filter, LayoutGrid, List, X, ChevronRight, ChevronDown, Trash2,
@@ -87,10 +87,18 @@ function TasksPageContent() {
   const [mainTab, setMainTab] = useState<'active' | 'archive'>('active');
 
   useEffect(() => {
-    if (sectionParam === 'archive') {
-      router.replace('/dashboard/motion?tab=archive');
+    if (sectionParam === 'archive' && activePipeline === 'GD_NON_MOCKUP') {
+      setMainTab('archive');
+    } else if (sectionParam === 'active') {
+      setMainTab('active');
     }
-  }, [sectionParam, router]);
+  }, [sectionParam, activePipeline]);
+
+  useEffect(() => {
+    if (activePipeline !== 'GD_NON_MOCKUP' && mainTab !== 'active') {
+      setMainTab('active');
+    }
+  }, [activePipeline, mainTab]);
 
   const [tasks, setTasks] = useState<TaskWithRelations[]>([]);
   const [forwardingMotionTaskId, setForwardingMotionTaskId] = useState<string | null>(null);
@@ -762,6 +770,11 @@ function TasksPageContent() {
           return false;
         }
         if (col.status === 'DESIGN_APPROVED') {
+          if (activePipeline === 'GD_NON_MOCKUP') {
+            // GD E-Commerce Opsi B: Approved tasks move directly to Archived Tasks.
+            // Active Approved column remains empty unless explicitly restored
+            return Boolean(t.restored_at) && !t.is_archived && (t.status_design === 'DESIGN_APPROVED' || t.status_design === 'TASK_CLOSED');
+          }
           return (t.status_design === 'DESIGN_APPROVED' || (t.status_design === 'TASK_CLOSED' && Boolean(t.restored_at)))
             && !t.motion_task && t.motion_readiness !== 'READY_TO_ANIMATE';
         }
@@ -880,7 +893,13 @@ function TasksPageContent() {
   // 1. All Accessible Approved Tasks (Archive Base with RBAC)
   const accessibleApprovedTasks = useMemo(() => {
     if (!user) return [];
-    let list = tasks.filter(t => (t.is_archived === true || t.status_design === 'DESIGN_APPROVED' || t.status_design === 'TASK_CLOSED') && !t.restored_at);
+    let list = tasks.filter(t => {
+      if (t.restored_at) return false;
+      const isStrat = t.pipeline_type === 'STRATEGIC' || Boolean(t.requires_strategic_concept);
+      const isApprovedOrClosed = t.is_archived === true || t.status_design === 'DESIGN_APPROVED' || t.status_design === 'TASK_CLOSED' || (isStrat && t.status_strat === 'APPROVED');
+      if (!isApprovedOrClosed) return false;
+      return determineTaskPipeline(t) === activePipeline;
+    });
     
     // Role-Based Access Control
     if (!['ADMIN', 'TEAM_LEAD'].includes(user.role_name)) {
@@ -894,7 +913,7 @@ function TasksPageContent() {
       });
     }
     return list;
-  }, [tasks, user]);
+  }, [tasks, user, activePipeline]);
 
   // Available archive years
   const availableArchiveYears = useMemo(() => {
@@ -1156,17 +1175,18 @@ function TasksPageContent() {
               <h1 className="text-xl font-bold text-[var(--text-primary)]">
                 {activePipeline === 'STRATEGIC' ? 'Strategic Pipeline'
                   : activePipeline === 'GD_MOCKUP' ? 'GD Mockup Pipeline'
-                  : 'GD E-Commerce Pipeline'}
+                  : mainTab === 'archive' ? 'GD E-Commerce Archive' : 'GD E-Commerce Pipeline'}
               </h1>
               <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-[var(--bg-secondary)] border border-[var(--border-primary)] text-[var(--text-secondary)] shadow-xs">
                 {mainTab === 'active' 
                   ? `${activePipeline === 'STRATEGIC' ? strategicActiveCount : activePipeline === 'GD_NON_MOCKUP' ? gdNonMockupActiveCount : gdMockupActiveCount} Active`
-                  : `${approvedTasksCount} Approved`}
+                  : `${approvedTasksCount} Archived`}
               </span>
             </div>
             <p className="text-xs text-[var(--text-muted)] mt-0.5">
               {activePipeline === 'STRATEGIC' ? 'Perumusan konsep visual & penyiapan deck strategi sebelum produksi desain.'
                 : activePipeline === 'GD_MOCKUP' ? 'Produksi aset desain mockup statis yang terintegrasi dengan alur Motion.'
+                : mainTab === 'archive' ? 'Pusat histori arsip task GD E-Commerce yang telah disetujui (Approved) & selesai.'
                 : 'Papan kerja mandiri desain non-mockup, PDP e-commerce, banner promosi & aset internal.'}
             </p>
           </div>
@@ -1174,70 +1194,119 @@ function TasksPageContent() {
 
         {/* Section Switcher Navigation & Action Controls */}
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          {/* View Mode Toggle: Kanban | Weekly | Table */}
-          <div className="flex items-center bg-[var(--bg-secondary)] p-0.5 rounded-lg border border-[var(--border-primary)] shadow-xs">
-                <button
-                  type="button"
-                  onClick={() => setViewMode('kanban')}
-                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
-                    viewMode === 'kanban'
-                      ? 'bg-[var(--accent-blue)] text-white shadow-xs'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                  }`}
-                  title="Kanban Board View"
-                >
-                  <LayoutGrid className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Kanban</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('weekly')}
-                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
-                    viewMode === 'weekly'
-                      ? 'bg-[var(--accent-blue)] text-white shadow-xs'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                  }`}
-                  title="Weekly Partition View (W1-W4)"
-                >
-                  <Calendar className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Weekly</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('table')}
-                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
-                    viewMode === 'table'
-                      ? 'bg-[var(--accent-blue)] text-white shadow-xs'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                  }`}
-                  title="Table View"
-                >
-                  <List className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Table</span>
-                </button>
-              </div>
-
-              {/* Export CSV */}
+          {/* Section Switcher: Active Pipeline vs Archived Tasks (Exclusive to GD E-Commerce - Opsi A) */}
+          {activePipeline === 'GD_NON_MOCKUP' && (
+            <div className="flex items-center p-1 bg-[var(--bg-secondary)] border border-[var(--border-primary)] rounded-xl shadow-xs">
               <button
                 type="button"
-                onClick={handleExportCSV}
-                className="p-2 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] border border-[var(--border-primary)] transition-colors shadow-xs"
-                title="Export Filtered CSV"
+                onClick={() => setMainTab('active')}
+                className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                  mainTab === 'active'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+                }`}
               >
-                <Download className="w-3.5 h-3.5" />
+                <LayoutGrid className="w-3.5 h-3.5" />
+                <span>Active Pipeline</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                    mainTab === 'active' ? 'bg-white/20 text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)]'
+                  }`}
+                >
+                  {gdNonMockupActiveCount}
+                </span>
               </button>
 
-              {/* New Task Button */}
-              {['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) && (
-                <button
-                  type="button"
-                  onClick={() => setShowCreateModal(true)}
-                  className="flex items-center gap-1.5 px-3.5 py-1.5 h-[32px] rounded-lg text-xs font-semibold bg-[var(--accent-blue)] text-white hover:bg-blue-600 transition-colors shadow-xs"
+              <button
+                type="button"
+                onClick={() => setMainTab('archive')}
+                className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                  mainTab === 'archive'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+                }`}
+              >
+                <FolderCheck className="w-3.5 h-3.5" />
+                <span>Archived Tasks</span>
+                <span
+                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                    mainTab === 'archive' ? 'bg-white/20 text-white' : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)]'
+                  }`}
                 >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>New Task</span>
-                </button>
-              )}
+                  {approvedTasksCount}
+                </span>
+              </button>
+            </div>
+          )}
+
+          {/* View Mode Toggle: Kanban | Weekly | Table (Only in Active Pipeline view) */}
+          {mainTab === 'active' && (
+            <div className="flex items-center bg-[var(--bg-secondary)] p-0.5 rounded-lg border border-[var(--border-primary)] shadow-xs">
+              <button
+                type="button"
+                onClick={() => setViewMode('kanban')}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                  viewMode === 'kanban'
+                    ? 'bg-[var(--accent-blue)] text-white shadow-xs'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+                title="Kanban Board View"
+              >
+                <LayoutGrid className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Kanban</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('weekly')}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                  viewMode === 'weekly'
+                    ? 'bg-[var(--accent-blue)] text-white shadow-xs'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+                title="Weekly Partition View (W1-W4)"
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Weekly</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('table')}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                  viewMode === 'table'
+                    ? 'bg-[var(--accent-blue)] text-white shadow-xs'
+                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+                title="Table View"
+              >
+                <List className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Table</span>
+              </button>
+            </div>
+          )}
+
+          {/* Export CSV (Only in Active Pipeline view) */}
+          {mainTab === 'active' && (
+            <button
+              type="button"
+              onClick={handleExportCSV}
+              className="p-2 rounded-lg text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] border border-[var(--border-primary)] transition-colors shadow-xs"
+              title="Export Filtered CSV"
+            >
+              <Download className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          {/* New Task Button (Only in Active Pipeline view) */}
+          {mainTab === 'active' && ['ADMIN', 'TEAM_LEAD', 'REQUESTER', 'STRATEGIC_PIC'].includes(user.role_name) && (
+            <button
+              type="button"
+              onClick={() => setShowCreateModal(true)}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 h-[32px] rounded-lg text-xs font-semibold bg-[var(--accent-blue)] text-white hover:bg-blue-600 transition-colors shadow-xs"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>New Task</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -1399,6 +1468,9 @@ function TasksPageContent() {
                     return false;
                   }
                   if (col.status === 'DESIGN_APPROVED') {
+                    if (activePipeline === 'GD_NON_MOCKUP') {
+                      return Boolean(t.restored_at) && !t.is_archived && (t.status_design === 'DESIGN_APPROVED' || t.status_design === 'TASK_CLOSED');
+                    }
                     return (t.status_design === 'DESIGN_APPROVED' || (t.status_design === 'TASK_CLOSED' && Boolean(t.restored_at)))
                       && !t.motion_task && t.motion_readiness !== 'READY_TO_ANIMATE';
                   }
@@ -4680,7 +4752,7 @@ function TaskDetailModal({
             )}
 
             {/* Motion Output Render */}
-            {effectiveMotionLink && (
+            {effectiveMotionLink && task.pipeline_type === 'GD_MOCKUP' && (
               <div className="p-2.5 rounded-lg bg-pink-500/5 border border-pink-500/20 flex flex-col gap-1">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] text-pink-400 font-bold uppercase tracking-wider">Output Render Animasi (Motion)</span>
@@ -4697,8 +4769,8 @@ function TaskDetailModal({
               </div>
             )}
 
-            {/* Motion Task / Handover Section (Only for non-strategic tasks) */}
-            {task.pipeline_type !== 'STRATEGIC' && (
+            {/* Motion Task / Handover Section (Only for GD Mockup tasks) */}
+            {task.pipeline_type === 'GD_MOCKUP' && (
               task.motion_task ? (
                 <div className="p-2.5 rounded-lg bg-pink-500/5 border border-pink-500/20 flex flex-col gap-1.5">
                   <span className="text-[10px] text-pink-400 font-bold uppercase tracking-wider">Motion Subtask</span>

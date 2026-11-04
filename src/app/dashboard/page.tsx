@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useAuth } from '@/lib/auth';
 import { usePersistedState } from '@/lib/use-persistent-state';
 import { getDashboardStats, getAllTasksWithRelations, getDesignerWorkloads } from '@/lib/supabase-store';
+import { isTaskActive, isTaskDone, isTaskArchived, matchesPeriod } from '@/lib/task-status';
 import { DESIGN_STATUS_COLORS, DESIGN_STATUS_LABELS, EXCELLENCE_COLORS, EXCELLENCE_LABELS } from '@/lib/constants';
 import { formatDisplayDate, getMonthName, getInitials } from '@/lib/utils';
 import { DashboardStats, TaskWithRelations, DesignerWorkload, OperationalExcellence } from '@/lib/types';
@@ -25,27 +26,27 @@ export default function DashboardPage() {
 
   const [filterMonth, setFilterMonth] = usePersistedState<string>('cmos_overview_filter_month', 'all');
   const [filterYear, setFilterYear] = usePersistedState<string>('cmos_overview_filter_year', 'all');
+  const [filterWeek, setFilterWeek] = usePersistedState<string>('cmos_overview_filter_week', 'all');
 
   const loadData = useCallback(async () => {
     try {
       const [s, w, allTasks] = await Promise.all([
-        getDashboardStats({ filterMonth, filterYear }),
-        getDesignerWorkloads(filterMonth, filterYear),
+        getDashboardStats({ filterMonth, filterYear, filterWeek }),
+        getDesignerWorkloads(filterMonth, filterYear, filterWeek),
         getAllTasksWithRelations()
       ]);
       setStats(s);
       setWorkloads(w);
       setAllTasksRaw(allTasks);
 
-      // Filter tasks by period for recent tasks and SLA breakdown
+      // Filter tasks by period (excluding archived) for recent tasks and SLA breakdown
       const periodTasks = allTasks.filter(t => {
-        const dStr = t.req_date || t.created_at || '';
-        if (!dStr) return true;
-        const y = dStr.substring(0, 4);
-        const m = dStr.substring(5, 7);
-        if (filterYear !== 'all' && y !== filterYear) return false;
-        if (filterMonth !== 'all' && m !== filterMonth) return false;
-        return true;
+        if (isTaskArchived(t)) return false;
+        return matchesPeriod(t.req_date || t.created_at, {
+          year: filterYear,
+          month: filterMonth,
+          week: filterWeek
+        });
       });
 
       setRecentTasks(periodTasks.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()).slice(0, 8));
@@ -59,7 +60,7 @@ export default function DashboardPage() {
     } catch (err) {
       console.error('Failed to load dashboard data:', err);
     }
-  }, [filterMonth, filterYear]);
+  }, [filterMonth, filterYear, filterWeek]);
 
   useEffect(() => {
     loadData();
@@ -71,10 +72,16 @@ export default function DashboardPage() {
   ])).sort().reverse();
 
   const getPeriodLabel = () => {
-    if (filterMonth === 'all' && filterYear === 'all') return 'All Time';
-    if (filterMonth === 'all') return `Year ${filterYear}`;
-    if (filterYear === 'all') return `${getMonthName(Number(filterMonth))} (All Years)`;
-    return `${getMonthName(Number(filterMonth))} ${filterYear}`;
+    let base = '';
+    if (filterMonth === 'all' && filterYear === 'all') base = 'All Time';
+    else if (filterMonth === 'all') base = `Year ${filterYear}`;
+    else if (filterYear === 'all') base = `${getMonthName(Number(filterMonth))} (All Years)`;
+    else base = `${getMonthName(Number(filterMonth))} ${filterYear}`;
+
+    if (filterWeek !== 'all') {
+      base += ` • ${filterWeek}`;
+    }
+    return base;
   };
 
   if (!user) return null;
@@ -139,6 +146,18 @@ export default function DashboardPage() {
             {availableYears.map(y => (
               <option key={y} value={y}>{y}</option>
             ))}
+          </select>
+          <select 
+            className="select" 
+            style={{ width: 'auto', padding: '5px 28px 5px 8px', fontSize: '12px' }}
+            value={filterWeek} 
+            onChange={(e) => setFilterWeek(e.target.value)}
+          >
+            <option value="all">Semua Minggu</option>
+            <option value="W1">Week 1 (1 - 7)</option>
+            <option value="W2">Week 2 (8 - 14)</option>
+            <option value="W3">Week 3 (15 - 21)</option>
+            <option value="W4">Week 4 (22 - Akhir)</option>
           </select>
         </div>
       </div>

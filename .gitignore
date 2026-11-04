@@ -42,3 +42,7 @@ next-env.d.ts
 
 # local maintenance scripts
 scripts/
+
+# uploads
+public/uploads/tasks/*
+!public/uploads/tasks/.gitkeep

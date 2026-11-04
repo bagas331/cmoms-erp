@@ -174,6 +174,7 @@ export interface CreativeTask {
   strat_concept_link?: string | null;
   strat_submitted_at?: string | null;
   design_pic_id: string | null;
+  assigned_at?: string | null;
   design_difficulty: DesignDifficulty | null;
   design_revision_count: number;
   status_design: DesignStatus;
@@ -217,6 +218,7 @@ export interface MotionTask {
   operator_id?: string | null;
 
   motion_pic_id: string | null;
+  assigned_at?: string | null;
   motion_difficulty: MotionDifficulty;
   motion_revision_count: number;
   status_motion: MotionStatus;
@@ -626,6 +628,71 @@ export interface CreateWeeklyIssueInput {
   reported_by?: string;
   reported_by_name?: string;
 }
+
+// --- PRODUCTIVITY & TIME TRACKER TYPES ---
+
+export type ProductivityTeamType = 'ALL' | 'GD' | 'MOTION';
+
+export interface ProductivityTaskRecord {
+  id: string;
+  task_code: string;
+  title: string;
+  pipeline: PipelineType;
+  team_type: 'GD' | 'MOTION';
+  pic_id: string;
+  pic_name: string;
+  pic_role: RoleName;
+  client_name: string;
+  campaign_name: string;
+  difficulty_label: string;
+  difficulty_points: number;
+  status: string;
+  assigned_at: string;
+  approved_at: string | null;
+  submission_date?: string | null;
+  turnaround_hours: number; // Duration from assigned to approved (or now if ongoing)
+  working_days: number;
+  is_completed: boolean;
+  revision_count: number;
+  revision_hours: number;
+  final_asset_link?: string | null;
+  link_motion?: string | null;
+}
+
+export interface DesignerProductivityMetrics {
+  user_id: string;
+  user_name: string;
+  user_initials: string;
+  role_name: RoleName;
+  team_type: 'GD' | 'MOTION';
+  total_completed_tasks: number;
+  total_in_progress_tasks: number;
+  total_points: number; // Total points earned in period
+  total_turnaround_hours: number; // Total turnaround time spent
+  avg_turnaround_hours: number; // Average hours per task
+  total_revision_count: number;
+  total_revision_hours: number;
+  points_per_working_hour: number; // Total points / Total turnaround hours
+  hours_per_point: number; // Total hours / Total points
+  time_utilization_rate: number; // (total_turnaround_hours / 40) * 100%
+  efficiency_rating: 'OPTIMAL' | 'BALANCED' | 'AVAILABLE' | 'OVERLOAD';
+  rank: number;
+  tasks: ProductivityTaskRecord[];
+}
+
+export interface ProductivitySummaryKPIs {
+  period_label: string;
+  team_type: ProductivityTeamType;
+  total_team_points: number;
+  total_completed_tasks: number;
+  total_active_tasks: number;
+  avg_turnaround_hours: number;
+  avg_revision_hours: number;
+  overall_points_per_hour: number;
+  avg_time_utilization_rate: number;
+  active_designers_count: number;
+}
+
 
 
 

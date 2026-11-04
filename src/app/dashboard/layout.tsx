@@ -15,7 +15,7 @@ import {
   Building2, FileType, X, CheckCheck,
   MessageSquare, RefreshCw, AlertTriangle, CheckCircle2,
   PanelLeftClose, PanelLeftOpen, Compass, Layers, ShoppingBag, Archive,
-  CalendarDays, TrendingUp, ShieldCheck, Plus
+  CalendarDays, TrendingUp, ShieldCheck, Plus, Timer
 } from 'lucide-react';
 import { formatRelativeTime } from '@/lib/utils';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -53,9 +53,10 @@ const NAV_SECTIONS: NavSectionConfig[] = [
     items: [
       { href: '/dashboard/campaign', label: 'Campaign Usage', icon: BarChart3, roles: ALL_TEAM_ROLES },
       { href: '/dashboard/capacity', label: 'Workload & Capacity', icon: Users, roles: ALL_TEAM_ROLES },
+      { href: '/dashboard/productivity', label: 'Productivity Tracker', icon: Timer, roles: ALL_TEAM_ROLES },
       { href: '/dashboard/reports', label: 'Reports & Analytics', icon: TrendingUp, roles: ALL_TEAM_ROLES },
       { href: '/dashboard/reports/issues', label: 'Reporting Kendala', icon: AlertTriangle, roles: ALL_TEAM_ROLES },
-      { href: '/dashboard/motion?tab=archive', label: 'Archived Tasks', icon: Archive, roles: ALL_TEAM_ROLES },
+      { href: '/dashboard/archive', label: 'Archived Tasks', icon: Archive, roles: ALL_TEAM_ROLES },
     ],
   },
   {
@@ -187,7 +188,7 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
     setNotifications(updated);
   };
 
-  const SidebarContent = ({ isMini = false }: { isMini?: boolean }) => (
+  const renderSidebarContent = (isMini = false) => (
     <>
       {/* Logo Header */}
       <div
@@ -357,7 +358,7 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
     <div style={{ background: 'var(--bg-primary)' }}>
       {/* Desktop Sidebar */}
       <aside className={`sidebar hidden lg:flex flex-col ${isCollapsed ? 'collapsed' : ''}`}>
-        <SidebarContent isMini={isCollapsed} />
+        {renderSidebarContent(isCollapsed)}
       </aside>
 
       {/* Mobile Sidebar Overlay */}
@@ -368,7 +369,7 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
             <button onClick={() => setShowMobileSidebar(false)} className="absolute top-3 right-3 btn-ghost p-1">
               <X className="w-4 h-4" />
             </button>
-            <SidebarContent isMini={false} />
+            {renderSidebarContent(false)}
           </aside>
         </div>
       )}

@@ -163,9 +163,9 @@ assert.strictEqual(
 console.log('[PASS] Request cleanly appeared in destination MOTION pipeline');
 
 // ============================================================================
-// 3. GD NON-MOCKUP (ECOMMERCE) PIPELINE -> MOTION PIPELINE FORWARD
+// 3. GD NON-MOCKUP (ECOMMERCE) PIPELINE -> ARCHIVED DIRECTLY (NO MOTION FORWARD)
 // ============================================================================
-console.log('\n--- 3. Testing GD NON-MOCKUP (Ecommerce) Pipeline: Disappears from Approved after Forward ---');
+console.log('\n--- 3. Testing GD NON-MOCKUP (Ecommerce) Pipeline: Completed at Approve & Archived ---');
 
 const ecomTask = createTask({
   campaign_name: 'PAYDAY',
@@ -193,35 +193,30 @@ updateTaskStatus(ecomTask.id, 'DESIGN_APPROVED', admin.id);
 let ecomWithRel = getTaskWithRelations(ecomTask.id)!;
 assert.strictEqual(ecomWithRel.status_design, 'DESIGN_APPROVED');
 
-// Verify it is visible in GD_NON_MOCKUP Approve column BEFORE forwarding
+// Under Option B business rule: Once approved, GD E-Commerce tasks move directly to Archived Tasks
+// and do NOT clutter the active GD_NON_MOCKUP Kanban board.
 let ecomActiveBoard = filterTasksByPipeline([ecomWithRel], 'GD_NON_MOCKUP');
-assert.strictEqual(ecomActiveBoard.length, 1, 'Approved Ecommerce must be visible in GD_NON_MOCKUP Approve column before forward');
-
-// Forward to Motion
-forwardTaskToMotion(ecomTask.id, designer.id);
-
-// Reload ecommerce task
-ecomWithRel = getTaskWithRelations(ecomTask.id)!;
-assert.strictEqual(ecomWithRel.motion_readiness, 'READY_TO_ANIMATE');
-assert.ok(ecomWithRel.motion_task, 'Motion subtask should exist for ecommerce task');
-
-// CRITICAL ASSERTION: The ecommerce task MUST HIDE from GD_NON_MOCKUP active board / Approve column!
-ecomActiveBoard = filterTasksByPipeline([ecomWithRel], 'GD_NON_MOCKUP');
 assert.strictEqual(
   ecomActiveBoard.length,
   0,
-  'CRITICAL: Once forwarded to Motion, Ecommerce request MUST DISAPPEAR from GD_NON_MOCKUP Approve column'
+  'Approved GD E-Commerce task must cleanly move to Archived Tasks and not appear in active Kanban'
 );
-console.log('[PASS] Ecommerce request cleanly disappeared from GD_NON_MOCKUP Approve column after forward to Motion');
+console.log('[PASS] Approved GD E-Commerce task automatically moves to Archived Tasks (Active Kanban is clean)');
 
-// The ecommerce task MUST appear in destination MOTION pipeline!
+// Verification: Forwarding GD E-Commerce to Motion must be strictly forbidden!
+assert.throws(() => {
+  forwardTaskToMotion(ecomTask.id, designer.id);
+}, /Hanya request Approved dari pipeline GD Mockup yang dapat diteruskan ke Motion/, 'Forwarding GD E-Commerce to Motion must throw error');
+console.log('[PASS] forwardTaskToMotion strictly rejects GD E-Commerce tasks with authoritative error message');
+
+// The ecommerce task must NEVER appear in destination MOTION pipeline!
 const ecomMotionTasks = filterTasksByPipeline([ecomWithRel], 'MOTION');
 assert.strictEqual(
   ecomMotionTasks.length,
-  1,
-  'CRITICAL: Forwarded ecommerce request MUST appear in destination MOTION pipeline'
+  0,
+  'CRITICAL: GD E-Commerce request must NEVER appear in destination MOTION pipeline'
 );
-console.log('[PASS] Ecommerce request cleanly appeared in destination MOTION pipeline');
+console.log('[PASS] GD E-Commerce request strictly kept out of MOTION pipeline');
 
 console.log('\n========================================================================');
 console.log('[SUCCESS] ALL PIPELINES APPROVED FORWARD & DISAPPEAR VERIFICATION TESTS PASSED 100%!');

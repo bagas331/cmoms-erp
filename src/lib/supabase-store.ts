@@ -26,6 +26,18 @@ import {
   buildTaskSyncPayload,
   buildMotionTaskSyncPayload
 } from './google-sheets-outbox';
+import {
+  isTaskActive,
+  isTaskDone,
+  isTaskPostponedOrCancelled,
+  isTaskArchived,
+  isMotionActive,
+  isMotionDone,
+  isMotionPostponedOrCancelled,
+  isMotionArchived,
+  getWeekKeyFromDate,
+  matchesPeriod
+} from './task-status';
 
 import * as localStore from './store';
 
@@ -231,6 +243,7 @@ export async function getMotionTasks(): Promise<MotionTask[]> {
             return {
               ...m,
               approved_at: resolvedApprovedAt,
+              assigned_at: m.assigned_at || (m.motion_pic_id ? m.created_at : null),
               link_motion: rawLink ? sanitizeUrl(rawLink) : null,
               final_video_link: m.final_video_link ? sanitizeUrl(m.final_video_link) : null,
               motion_difficulty: m.motion_difficulty || 'LVL_1_SIMPLE',
@@ -350,7 +363,7 @@ export function extractAttachmentsFromNotes(notes: string | null | undefined): {
  * Packs attachments into notes using the standard [ATTACHMENTS:...] metadata tag.
  */
 export function packAttachmentsIntoNotes(notes: string | null | undefined, attachments: TaskAttachment[] | undefined): string {
-  let cleanNotes = (notes || '').replace(/\[ATTACHMENTS:\[[\s\S]*?\]\]\n?/g, '').trim();
+  const cleanNotes = (notes || '').replace(/\[ATTACHMENTS:\[[\s\S]*?\]\]\n?/g, '').trim();
   if (attachments && attachments.length > 0) {
     return `[ATTACHMENTS:${JSON.stringify(attachments)}]\n${cleanNotes}`.trim();
   }
@@ -628,6 +641,7 @@ export async function getAllTasksWithRelations(): Promise<TaskWithRelations[]> {
             return {
               ...t,
               approved_at: resolvedApprovedAt,
+              assigned_at: t.assigned_at || (t.design_pic_id ? t.created_at : null),
               source_strategic_task_id: resolvedSourceStrategicTaskId,
               spawned_design_task_id: resolvedSpawnedDesignTaskId,
               final_asset_link: resolvedFinalAssetLink,
@@ -662,6 +676,133 @@ export async function getAllTasksWithRelations(): Promise<TaskWithRelations[]> {
 
     return localStore.getAllTasksWithRelations();
   }, 2000);
+}
+
+/**
+ * Direct single-task lookup by ID or task_code.
+ * Avoids loading the entire task table into memory, dramatically improving
+ * response time and reducing RAM pressure for task details and chat messages.
+ */
+export async function getTaskById(taskIdOrCode: string): Promise<TaskWithRelations | null> {
+  if (!taskIdOrCode) return null;
+
+  if (supabase) {
+    try {
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(taskIdOrCode);
+      const query = supabase
+        .from('tasks')
+        .select(`
+          *,
+          client:clients(name, client_type),
+          content_type:content_types(name),
+          strat_pic:users!strat_pic_id(full_name),
+          design_pic:users!design_pic_id(full_name),
+          created_by_user:users!created_by(full_name),
+          motion_tasks(*, motion_pic:users!motion_pic_id(full_name)),
+          task_revisions(*)
+        `);
+
+      const { data, error } = isUuid
+        ? await query.eq('id', taskIdOrCode).maybeSingle()
+        : await query.or(`id.eq.${taskIdOrCode},task_code.eq.${taskIdOrCode}`).maybeSingle();
+
+      if (!error && data) {
+        const usersList = await getUsers();
+        const userMap = new Map((usersList || []).map(u => [u.id, u.full_name]));
+        const t = data;
+
+        let strat_concept_name: string | null = t.strat_concept_name || null;
+        let strat_concept_link: string | null = t.strat_concept_link ? sanitizeUrl(t.strat_concept_link) : null;
+        let strat_submitted_at: string | null = t.strat_submitted_at || null;
+        let displayNotes = t.notes || '';
+
+        if (t.notes && t.notes.includes('[STRAT_CONCEPT:')) {
+          const matchConcept = t.notes.match(/\[STRAT_CONCEPT:(\{[\s\S]*?\})\]/);
+          if (matchConcept) {
+            const parsed = safeJsonParse<{ name?: string; link?: string; submitted_at?: string }>(matchConcept[1], {});
+            strat_concept_name = parsed.name || null;
+            strat_concept_link = parsed.link ? sanitizeUrl(parsed.link) : null;
+            strat_submitted_at = parsed.submitted_at || null;
+            displayNotes = displayNotes.replace(/\[STRAT_CONCEPT:\{[\s\S]*?\}\]\n?/g, '').trim();
+          }
+        }
+
+        let strat_pic_ids: string[] = [];
+        if (t.notes && t.notes.includes('[STRAT_PICS:')) {
+          const matchPics = t.notes.match(/\[STRAT_PICS:(\[[\s\S]*?\])\]/);
+          if (matchPics) {
+            strat_pic_ids = safeJsonParse<string[]>(matchPics[1], []);
+            displayNotes = displayNotes.replace(/\[STRAT_PICS:\[[\s\S]*?\]\]\n?/g, '').trim();
+          }
+        }
+        if (strat_pic_ids.length === 0 && t.strat_pic_id) {
+          strat_pic_ids = [t.strat_pic_id];
+        }
+
+        let taskAttachments: TaskAttachment[] = [];
+        if (Array.isArray(t.attachments) && t.attachments.length > 0) {
+          taskAttachments = t.attachments;
+        } else if (t.notes && t.notes.includes('[ATTACHMENTS:')) {
+          const matchAtt = t.notes.match(/\[ATTACHMENTS:(\[[\s\S]*?\])\]/);
+          if (matchAtt) {
+            taskAttachments = safeJsonParse<TaskAttachment[]>(matchAtt[1], []);
+            displayNotes = displayNotes.replace(/\[ATTACHMENTS:\[[\s\S]*?\]\]\n?/g, '').trim();
+          }
+        }
+        if (taskAttachments.length === 0) {
+          taskAttachments = localStore.getTaskAttachments(t.id);
+        }
+
+        const isMockup = isMockupTask({
+          is_mockup: t.is_mockup,
+          content_type_id: t.content_type_id,
+          content_type_name: t.content_type?.name,
+          campaign_name: t.campaign_name
+        });
+
+        const pipelineType = determineTaskPipeline({
+          pipeline_type: t.pipeline_type,
+          requires_strategic_concept: t.requires_strategic_concept,
+          status_strat: t.status_strat,
+          is_mockup: isMockup,
+          content_type_id: t.content_type_id,
+          content_type_name: t.content_type?.name,
+          campaign_name: t.campaign_name,
+          task_source: t.task_source
+        });
+
+        return {
+          ...t,
+          notes: displayNotes,
+          strat_concept_name,
+          strat_concept_link,
+          strat_submitted_at,
+          attachments: taskAttachments,
+          strat_pic_ids,
+          client_name: t.client?.name || 'Unknown',
+          client_type: t.client?.client_type || 'Unknown',
+          content_type_name: t.content_type?.name || 'Unknown',
+          design_pic_name: t.design_pic?.full_name || null,
+          strat_pic_name: t.strat_pic?.full_name || null,
+          strat_pic_names: strat_pic_ids.map(id => userMap.get(id)).filter(Boolean) as string[],
+          created_by_name: t.created_by_user?.full_name || 'Unknown',
+          motion_task: t.motion_tasks && t.motion_tasks.length > 0 ? t.motion_tasks[0] : null,
+          motion_pic_name: (t.motion_tasks && t.motion_tasks.length > 0) ? t.motion_tasks[0].motion_pic?.full_name : null,
+          revisions: (t.task_revisions || []).map(unpackRevisionData),
+          is_mockup: isMockup,
+          pipeline_type: pipelineType,
+          active_pipeline: pipelineType
+        } as TaskWithRelations;
+      }
+    } catch (err) {
+      console.warn('Supabase getTaskById failed, falling back to localStore:', err);
+    }
+  }
+
+  // Fallback to localStore
+  return localStore.getTaskWithRelations(taskIdOrCode) || 
+         localStore.getAllTasksWithRelations().find(t => t.id === taskIdOrCode || t.task_code === taskIdOrCode) || 
+         null;
 }
 
 // --- UNIQUE TASK CODE GENERATOR & SAFE INSERTION ---
@@ -729,7 +870,7 @@ export async function getNextTaskCode(): Promise<string> {
 async function insertTaskWithUniqueCode(initialTask: any): Promise<any> {
   if (!supabase) return initialTask;
 
-  let currentTask = { ...initialTask };
+  const currentTask = { ...initialTask };
   const currentYear = getCurrentYear();
   const prefix = `REQ-${currentYear}-`;
 
@@ -1289,8 +1430,7 @@ export async function addComment(
 
   const users = await getUsers();
   const user = users.find(u => u.id === userId);
-  const tasks = await getAllTasksWithRelations();
-  const task = tasks.find(t => t.id === taskId);
+  const task = await getTaskById(taskId);
 
   const finalName = userOverride?.full_name || user?.full_name || 'User';
   const finalAvatar = userOverride?.avatar_initials || user?.avatar_initials || finalName.substring(0, 2).toUpperCase();
@@ -1636,7 +1776,7 @@ export async function assignTask(taskId: string, input: AssignTaskInput, perform
   // Check current task status to ensure STRAT_PENDING phase is respected
   const { data: currentTask } = await supabase
     .from('tasks')
-    .select('task_code, campaign_name, status_design, requires_strategic_concept, status_strat, design_pic_id, strat_pic_id, notes, created_by')
+    .select('task_code, campaign_name, status_design, requires_strategic_concept, status_strat, design_pic_id, strat_pic_id, notes, created_by, assigned_at')
     .eq('id', taskId)
     .single();
 
@@ -1664,6 +1804,7 @@ export async function assignTask(taskId: string, input: AssignTaskInput, perform
 
   if (input.design_pic_id && input.design_pic_id.trim() !== '') {
     updates.design_pic_id = input.design_pic_id;
+    updates.assigned_at = (currentTask as any)?.assigned_at || new Date().toISOString();
     if (input.design_difficulty) updates.design_difficulty = input.design_difficulty;
     // Only transition status to DESIGN_ASSIGNED if strategic phase is completed or not required
     if (!isStratPhase) {
@@ -1915,11 +2056,13 @@ export async function handoverStrategicTaskToGD(
   }
 
   // 1. Fetch current strategic task from Supabase
-  let { data: stratTask, error: fetchErr } = await supabase
+  const { data: initialStratTask, error: _fetchErr } = await supabase
     .from('tasks')
     .select('*')
     .eq('id', taskId)
     .maybeSingle();
+
+  let stratTask = initialStratTask;
 
   // If not found by ID, attempt lookup by task_code
   if (!stratTask && taskId) {
@@ -2071,7 +2214,7 @@ export async function handoverStrategicTaskToGD(
   }
 
   // 6. Update parent strategic task
-  let parentCleanNotes = (stratTask.notes || '')
+  const parentCleanNotes = (stratTask.notes || '')
     .replace(/\[SPAWNED_DESIGN_TASK_ID:[^\]]+\]\n?/g, '')
     .replace(/\[SPAWNED_DESIGN_TASK_CODE:[^\]]+\]\n?/g, '')
     .trim();
@@ -2101,7 +2244,7 @@ export async function handoverStrategicTaskToGD(
   // 7. Synchronize localStore in-memory cache safely
   try {
     const localTasks = localStore.getTasks();
-    let lIdx = localTasks.findIndex(t => t.id === taskId || t.task_code === taskId);
+    const lIdx = localTasks.findIndex(t => t.id === taskId || t.task_code === taskId);
     if (lIdx === -1) {
       localTasks.push({
         ...stratTask,
@@ -2114,7 +2257,7 @@ export async function handoverStrategicTaskToGD(
       };
     }
     if (spawnedTask) {
-      let spIdx = localTasks.findIndex(t => t.id === spawnedTask.id);
+      const spIdx = localTasks.findIndex(t => t.id === spawnedTask.id);
       if (spIdx === -1) {
         localTasks.push(spawnedTask);
       } else {
@@ -2615,7 +2758,7 @@ async function forwardTaskToMotionInternal(taskId: string, performedBy: string):
   if (taskError) throw taskError;
   if (!currentTask) throw new Error('Request tidak ditemukan.');
   if (!canForwardToMotion(currentTask)) {
-    throw new Error('Hanya request Approved dari pipeline GD Mockup atau GD E-Commerce yang dapat diteruskan ke Motion.');
+    throw new Error('Hanya request Approved dari pipeline GD Mockup yang dapat diteruskan ke Motion. Request GD E-Commerce selesai di tahap Approve.');
   }
 
   const [
@@ -3076,27 +3219,41 @@ export async function getAuditLogs(): Promise<AuditLog[]> {
   return data as AuditLog[];
 }
 
-export async function getDesignerWorkloads(filterMonth?: string, filterYear?: string): Promise<DesignerWorkload[]> {
+export interface DashboardStatsFilterOptions {
+  filterMonth?: string;
+  filterYear?: string;
+  filterWeek?: string;
+  filterDateFrom?: string;
+  filterDateTo?: string;
+}
+
+export async function getDesignerWorkloads(filterMonth?: string, filterYear?: string, filterWeek?: string): Promise<DesignerWorkload[]> {
   const users = await getUsers();
   const designers = users.filter(u => u.role_name === 'DESIGNER' || u.role_name === 'TEAM_LEAD');
   let tasks = await getTasks();
 
+  // Exclude archived tasks from workload calculation
+  tasks = tasks.filter(t => !isTaskArchived(t));
+
   if (filterYear && filterYear !== 'all') {
-    tasks = tasks.filter(t => new Date(t.req_date).getFullYear().toString() === filterYear);
+    tasks = tasks.filter(t => new Date(t.req_date || t.created_at).getFullYear().toString() === filterYear);
   }
   if (filterMonth && filterMonth !== 'all') {
-    tasks = tasks.filter(t => String(new Date(t.req_date).getMonth() + 1).padStart(2, '0') === filterMonth);
+    tasks = tasks.filter(t => String(new Date(t.req_date || t.created_at).getMonth() + 1).padStart(2, '0') === filterMonth);
+  }
+  if (filterWeek && filterWeek !== 'all') {
+    tasks = tasks.filter(t => getWeekKeyFromDate(t.req_date || t.created_at) === filterWeek);
   }
 
   return designers.filter(u => u.daily_capacity_points > 0).map(user => {
+    // Strictly active tasks: not done, not cancelled, not postponed
     const activeTasks = tasks.filter(
-      t => t.design_pic_id === user.id &&
-        !['TASK_CLOSED'].includes(t.status_design)
+      t => t.design_pic_id === user.id && isTaskActive(t)
     );
 
     const accumulated = activeTasks.reduce((sum, t) => {
       const weight = t.design_difficulty ? DIFFICULTY_WEIGHTS[t.design_difficulty] : 0;
-      return sum + (t.output_qty * weight);
+      return sum + ((t.output_qty || t.req_qty || 1) * weight);
     }, 0);
 
     return {
@@ -3113,7 +3270,7 @@ export async function getDesignerWorkloads(filterMonth?: string, filterYear?: st
         task_code: t.task_code,
         campaign_name: t.campaign_name,
         difficulty: t.design_difficulty,
-        points: t.design_difficulty ? t.output_qty * DIFFICULTY_WEIGHTS[t.design_difficulty] : 0,
+        points: t.design_difficulty ? (t.output_qty || t.req_qty || 1) * DIFFICULTY_WEIGHTS[t.design_difficulty] : 0,
         status: t.status_design,
         due_date: t.due_date,
       })),
@@ -3122,19 +3279,22 @@ export async function getDesignerWorkloads(filterMonth?: string, filterYear?: st
 }
 
 export async function getDashboardStats(
-  filterMonthOrOptions?: string | { filterMonth?: string; filterYear?: string; filterDateFrom?: string; filterDateTo?: string },
+  filterMonthOrOptions?: string | DashboardStatsFilterOptions,
   filterYearArg?: string,
   filterDateFromArg?: string,
-  filterDateToArg?: string
+  filterDateToArg?: string,
+  filterWeekArg?: string
 ): Promise<DashboardStats> {
   let filterMonth: string | undefined;
   let filterYear: string | undefined;
+  let filterWeek: string | undefined;
   let filterDateFrom: string | undefined;
   let filterDateTo: string | undefined;
 
   if (typeof filterMonthOrOptions === 'object' && filterMonthOrOptions !== null) {
     filterMonth = filterMonthOrOptions.filterMonth;
     filterYear = filterMonthOrOptions.filterYear;
+    filterWeek = filterMonthOrOptions.filterWeek;
     filterDateFrom = filterMonthOrOptions.filterDateFrom;
     filterDateTo = filterMonthOrOptions.filterDateTo;
   } else {
@@ -3142,12 +3302,17 @@ export async function getDashboardStats(
     filterYear = filterYearArg;
     filterDateFrom = filterDateFromArg;
     filterDateTo = filterDateToArg;
+    filterWeek = filterWeekArg;
   }
 
   let tasks = await getAllTasksWithRelations();
   let motionTasks = await getMotionTasks();
 
-  // Apply date range / month filter if provided
+  // Exclude archived tasks from operational stats
+  tasks = tasks.filter(t => !isTaskArchived(t));
+  motionTasks = motionTasks.filter(m => !isMotionArchived(m));
+
+  // Apply date range / month / week filter if provided
   if (filterDateFrom && filterDateTo) {
     tasks = tasks.filter(t => {
       const d = t.req_date ? t.req_date.substring(0, 10) : '';
@@ -3178,20 +3343,28 @@ export async function getDashboardStats(
         return dStr.substring(5, 7) === filterMonth;
       });
     }
+    if (filterWeek && filterWeek !== 'all') {
+      tasks = tasks.filter(t => getWeekKeyFromDate(t.req_date || t.created_at) === filterWeek);
+      motionTasks = motionTasks.filter(m => getWeekKeyFromDate(m.created_at) === filterWeek);
+    }
   }
 
   const thisPeriodTasks = tasks;
-  const activeTasks = tasks.filter(t => !['TASK_CLOSED'].includes(t.status_design));
+  // Strictly active tasks: not done, not postponed/cancelled
+  const activeTasks = tasks.filter(t => isTaskActive(t));
+  const completedTasks = tasks.filter(t => isTaskDone(t));
+  const activeMotionTasks = motionTasks.filter(m => isMotionActive(m));
+
   const submittedOrApproved = thisPeriodTasks.filter(t => t.operational_excellence);
   const excellenceCount = submittedOrApproved.filter(t => t.operational_excellence === 'EXCELLENCE').length;
 
   return {
     active_tasks: activeTasks.length,
-    unassigned_tasks: tasks.filter(t => t.status_design === 'DESIGN_UNASSIGNED' || t.status_design === 'STRAT_PENDING').length,
-    in_progress_tasks: tasks.filter(t => t.status_design === 'DESIGN_IN_PROGRESS' || t.status_design === 'DESIGN_ASSIGNED').length,
-    submitted_tasks: tasks.filter(t => t.status_design === 'DESIGN_SUBMITTED').length,
-    completed_tasks: tasks.filter(t => t.status_design === 'TASK_CLOSED' || t.status_design === 'DESIGN_APPROVED').length,
-    motion_queue: motionTasks.filter(mt => mt.status_motion === 'QUEUED' || mt.status_motion === 'IN_PROGRESS').length,
+    unassigned_tasks: tasks.filter(t => isTaskActive(t) && (t.status_design === 'DESIGN_UNASSIGNED' || t.status_design === 'STRAT_PENDING')).length,
+    in_progress_tasks: tasks.filter(t => isTaskActive(t) && (t.status_design === 'DESIGN_IN_PROGRESS' || t.status_design === 'DESIGN_ASSIGNED' || t.status_design === 'DESIGN_REVISION')).length,
+    submitted_tasks: tasks.filter(t => isTaskActive(t) && t.status_design === 'DESIGN_SUBMITTED').length,
+    completed_tasks: completedTasks.length,
+    motion_queue: activeMotionTasks.length,
     sla_compliance_rate: submittedOrApproved.length > 0
       ? (excellenceCount / submittedOrApproved.length) * 100
       : 100,
@@ -3834,6 +4007,7 @@ export async function assignMotionPic(motionTaskId: string, motionPicId: string,
   const validPicId = motionPicId && motionPicId.trim() !== '' ? motionPicId : null;
   const updates: any = {
     motion_pic_id: validPicId,
+    assigned_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };
   const { error } = await supabase.from('motion_tasks').update(updates).eq('id', motionTaskId);

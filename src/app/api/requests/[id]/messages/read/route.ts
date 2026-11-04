@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { markCommentsAsRead, getAllTasksWithRelations } from '@/lib/supabase-store';
+import { markCommentsAsRead, getTaskById } from '@/lib/supabase-store';
 import { resolveAuthenticatedUser } from '@/lib/server-auth';
 import { canUserAccessTaskChat } from '@/lib/chat-auth';
 
@@ -24,8 +24,7 @@ export async function POST(req: Request, context: RouteContext) {
       );
     }
 
-    const tasks = await getAllTasksWithRelations();
-    const task = tasks.find(t => t.id === taskId || t.task_code === taskId);
+    const task = await getTaskById(taskId);
     if (!task) {
       return NextResponse.json(
         { success: false, message: 'Request tidak ditemukan' },
